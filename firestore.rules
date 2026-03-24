@@ -1,0 +1,174 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - Firebase Auth UID
+    //   - email: string (required, email) - User's email
+    //   - displayName: string (optional) - User's display name
+    //   - photoURL: string (optional) - User's photo URL
+    //   - role: string (required, enum: ['admin', 'user']) - User's role
+    //   - status: string (required, enum: ['pending', 'approved', 'rejected']) - User's status
+    //   - department: string (required) - User's department
+    //   - createdAt: string (optional, ISO 8601) - Creation timestamp
+    //
+    // Collection: projects
+    // Document ID: {projectId}
+    // Fields:
+    //   - id: string (required) - Unique project ID
+    //   - title: string (required) - Project title
+    //   - description: string (optional) - Project description
+    //   - startDate: string (required, date) - Project start date
+    //   - endDate: string (required, date) - Project end date
+    //   - status: string (required, enum: ['Planning', 'Ongoing', 'Completed']) - Project status
+    //   - tags: list (optional) - Environmental tags
+    //   - ownerId: string (required) - UID of the owner
+    //   - createdAt: string (optional, ISO 8601) - Creation timestamp
+    //   - updatedAt: string (optional, ISO 8601) - Update timestamp
+    //
+    // Collection: events
+    // Document ID: {eventId}
+    // Fields:
+    //   - id: string (required) - Unique event ID
+    //   - title: string (required) - Event title
+    //   - description: string (optional) - Event description
+    //   - date: string (required, date) - Event date
+    //   - category: string (required, enum: ['Project', 'Environmental', 'Internal']) - Event category
+    //   - priority: string (required, enum: ['Low', 'Medium', 'High']) - Event priority
+    //   - tags: list (optional) - Environmental tags
+    //   - ownerId: string (required) - UID of the owner
+    //   - createdAt: string (optional, ISO 8601) - Creation timestamp
+    //
+    // Collection: activities
+    // Document ID: {activityId}
+    // Fields:
+    //   - id: string (required) - Unique activity ID
+    //   - userId: string (required) - UID of the user who performed the action
+    //   - userName: string (required) - Name of the user who performed the action
+    //   - action: string (required) - The action performed
+    //   - target: string (required) - The target of the action
+    //   - createdAt: string (required, ISO 8601) - When the activity occurred
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "javkhlanbn30@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isApproved() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'approved' || isAdmin());
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function isValidSimpleDate(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'status', 'department']) &&
+             data.uid is string &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'user'] &&
+             data.status in ['pending', 'approved', 'rejected'] &&
+             data.department is string && data.department.size() > 0;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['id', 'title', 'status', 'ownerId']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() < 100 &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.status in ['Planning', 'Ongoing', 'Completed'] &&
+             data.ownerId == request.auth.uid &&
+             (!('startDate' in data) || isValidSimpleDate(data.startDate)) &&
+             (!('endDate' in data) || isValidSimpleDate(data.endDate));
+    }
+
+    function isValidEvent(data) {
+      return data.keys().hasAll(['id', 'title', 'date', 'category', 'priority', 'ownerId']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() < 100 &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             isValidSimpleDate(data.date) &&
+             data.category in ['Project', 'Environmental', 'Internal'] &&
+             data.priority in ['Low', 'Medium', 'High'] &&
+             data.ownerId == request.auth.uid;
+    }
+
+    function isValidActivity(data) {
+      return data.keys().hasAll(['id', 'userId', 'userName', 'action', 'target', 'createdAt']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.userId == request.auth.uid &&
+             data.userName is string && data.userName.size() > 0 &&
+             data.action is string && data.action.size() > 0 &&
+             data.target is string && data.target.size() > 0 &&
+             isValidDateString(data.createdAt);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) &&
+                      request.resource.data.role == 'user' && request.resource.data.status == 'pending';
+      allow update: if isAuthenticated() && (
+                      (isOwner(userId) && isValidUser(request.resource.data) && 
+                       request.resource.data.role == resource.data.role && 
+                       request.resource.data.status == resource.data.status) ||
+                      isAdmin()
+                    );
+      allow delete: if isAdmin();
+    }
+
+    match /projects/{projectId} {
+      allow read: if isApproved();
+      allow create: if isApproved() && isValidProject(request.resource.data);
+      allow update: if isApproved() && (isOwner(resource.data.ownerId) || isAdmin()) && isValidProject(request.resource.data);
+      allow delete: if isApproved() && (isOwner(resource.data.ownerId) || isAdmin());
+    }
+
+    match /events/{eventId} {
+      allow read: if isApproved();
+      allow create: if isApproved() && isValidEvent(request.resource.data);
+      allow update: if isApproved() && (isOwner(resource.data.ownerId) || isAdmin()) && isValidEvent(request.resource.data);
+      allow delete: if isApproved() && (isOwner(resource.data.ownerId) || isAdmin());
+    }
+
+    match /activities/{activityId} {
+      allow read: if isApproved();
+      allow create: if isApproved() && isValidActivity(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+  }
+}

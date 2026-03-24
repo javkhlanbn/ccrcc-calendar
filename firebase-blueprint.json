@@ -1,0 +1,87 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique user ID from Firebase Auth" },
+        "email": { "type": "string", "format": "email", "description": "User's email address" },
+        "displayName": { "type": "string", "description": "User's display name" },
+        "photoURL": { "type": "string", "description": "User's profile picture URL" },
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "User's role in the system" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"], "description": "User's approval status" },
+        "department": { "type": "string", "description": "User's department" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the user was created" }
+      },
+      "required": ["uid", "email", "role", "status", "department"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Environmental project details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique project ID" },
+        "title": { "type": "string", "description": "Project title" },
+        "description": { "type": "string", "description": "Project description" },
+        "startDate": { "type": "string", "format": "date", "description": "Project start date" },
+        "endDate": { "type": "string", "format": "date", "description": "Project end date" },
+        "status": { "type": "string", "enum": ["Planning", "Ongoing", "Completed"], "description": "Current status of the project" },
+        "tags": { "type": "array", "items": { "type": "string" }, "description": "Associated environmental tags" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns the project" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the project was created" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "When the project was last updated" }
+      },
+      "required": ["id", "title", "status", "ownerId"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "Calendar event details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique event ID" },
+        "title": { "type": "string", "description": "Event title" },
+        "description": { "type": "string", "description": "Event description" },
+        "date": { "type": "string", "format": "date", "description": "Event date" },
+        "category": { "type": "string", "enum": ["Project", "Environmental", "Internal"], "description": "Event category" },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High"], "description": "Event priority" },
+        "tags": { "type": "array", "items": { "type": "string" }, "description": "Associated environmental tags" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns the event" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the event was created" }
+      },
+      "required": ["id", "title", "date", "category", "priority", "ownerId"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "Recent activity log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique activity ID" },
+        "userId": { "type": "string", "description": "UID of the user who performed the action" },
+        "userName": { "type": "string", "description": "Name of the user who performed the action" },
+        "action": { "type": "string", "description": "The action performed (e.g., 'created project')" },
+        "target": { "type": "string", "description": "The target of the action (e.g., project title)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the activity occurred" }
+      },
+      "required": ["id", "userId", "userName", "action", "target", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Environmental projects"
+    },
+    "/events/{eventId}": {
+      "schema": "Event",
+      "description": "Calendar events"
+    },
+    "/activities/{activityId}": {
+      "schema": "Activity",
+      "description": "System-wide activity logs"
+    }
+  }
+}
