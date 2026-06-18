@@ -20,7 +20,8 @@ import {
   Building2,
   Mail,
   Lock,
-  UserCircle
+  UserCircle,
+  ClipboardList
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
@@ -28,7 +29,7 @@ import { cn } from '../lib/utils';
 import { Department } from '../types';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { language, setLanguage, theme, setTheme, user, profile, login, loginWithEmail, register, logout, isAuthReady } = useAppContext();
+  const { language, setLanguage, theme, setTheme, user, profile, loginWithEmail, register, logout, isAuthReady, updateProfilePicture, tasks } = useAppContext();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
@@ -38,6 +39,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [department, setDepartment] = useState<Department>('Захиргаа, санхүүгийн хэлтэс');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const t = translations[language];
 
@@ -65,11 +68,99 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     }
   };
 
-  const navItems = [
+  const handleProfilePhotoClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const resizeImageFile = async (file: File): Promise<string> => {
+    const objectUrl = URL.createObjectURL(file);
+
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error(language === 'MN' ? 'Зургийг уншиж чадсангүй' : 'Unable to read image'));
+        img.src = objectUrl;
+      });
+
+      const maxSize = 512;
+      const scale = Math.min(maxSize / image.width, maxSize / image.height, 1);
+      const targetWidth = Math.max(1, Math.round(image.width * scale));
+      const targetHeight = Math.max(1, Math.round(image.height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+
+      const context = canvas.getContext('2d');
+      if (!context) {
+        throw new Error(language === 'MN' ? 'Зургийн боловсруулалт амжилтгүй боллоо' : 'Image processing failed');
+      }
+
+      context.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((result) => {
+          if (result) {
+            resolve(result);
+            return;
+          }
+          reject(new Error(language === 'MN' ? 'Зургийн шахалт амжилтгүй боллоо' : 'Image compression failed'));
+        }, 'image/jpeg', 0.82);
+      });
+
+      const compressedDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (event) => resolve(String(event.target?.result || ''));
+        reader.onerror = () => reject(new Error(language === 'MN' ? 'Зургийг хувиргаж чадсангүй' : 'Unable to convert image'));
+        reader.readAsDataURL(blob);
+      });
+
+      if (!compressedDataUrl) {
+        throw new Error(language === 'MN' ? 'Зургийн өгөгдөл хоосон байна' : 'Image data is empty');
+      }
+
+      return compressedDataUrl;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+
+  const handlePhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert(language === 'MN' ? 'Зургийн файл сонгоно уу' : 'Please select an image file');
+      return;
+    }
+
+    setUploadingPhoto(true);
+    try {
+      const photoDataUrl = await resizeImageFile(file);
+      await updateProfilePicture(photoDataUrl);
+    } catch (err: any) {
+      console.error('Error uploading photo:', err);
+      alert(err?.message || (language === 'MN' ? 'Профайл зураг оруулах үед алдаа гарлаа' : 'Failed to upload profile photo'));
+    } finally {
+      setUploadingPhoto(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const activeTaskCount = tasks.filter(tk => tk.status !== 'Completed').length;
+
+  const navItems: { icon: React.ElementType; label: string; path: string; badge?: number }[] = [
     { icon: LayoutDashboard, label: t.dashboard, path: '/' },
     { icon: CalendarIcon, label: t.calendar, path: '/calendar' },
     { icon: Briefcase, label: t.projects, path: '/projects' },
   ];
+
+  if (profile?.role !== 'admin') {
+    navItems.push({ icon: ClipboardList, label: t.myTasks, path: '/my-tasks', badge: activeTaskCount });
+  }
 
   if (profile?.role === 'admin') {
     navItems.push({ icon: ShieldCheck, label: language === 'MN' ? 'Хэрэглэгчид' : 'Users', path: '/admin/users' });
@@ -91,10 +182,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="w-16 h-16 bg-primary rounded-2xl flex items-center justify-center text-white shadow-xl shadow-primary/20 mx-auto mb-4">
               <Leaf className="w-10 h-10" />
             </div>
-            <h1 className="text-3xl font-bold tracking-tight">EcoPlan</h1>
-            <p className="text-slate-500 dark:text-slate-400 mt-2">
-              {language === 'MN' ? 'Байгаль орчны төслөө удирдах систем' : 'Environmental Project Management System'}
-            </p>
+            <h1 className="text-3xl font-bold tracking-tight">CCRCC CALENDAR</h1>
+              
           </div>
 
           <div className="card shadow-2xl border-none">
@@ -154,16 +243,16 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               )}
 
               <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-500 uppercase ml-1">{language === 'MN' ? 'И-мэйл' : 'Email'}</label>
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">{language === 'MN' ? 'Нэвтрэх нэр' : 'Email'}</label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input 
                     required
-                    type="email" 
+                    type="text" 
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="input-field pl-10" 
-                    placeholder="example@mail.com"
+                    placeholder="Нэвтрэх нэр"
                   />
                 </div>
               </div>
@@ -216,20 +305,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                     {authMode === 'login' ? (language === 'MN' ? 'Нэвтрэх' : 'Login') : (language === 'MN' ? 'Бүртгүүлэх' : 'Register')}
                   </>
                 )}
-              </button>
-
-              <div className="relative my-6">
-                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200 dark:border-slate-800"></div></div>
-                <div className="relative flex justify-center text-xs uppercase"><span className="bg-white dark:bg-slate-900 px-2 text-slate-500 font-bold">{language === 'MN' ? 'Эсвэл' : 'Or'}</span></div>
-              </div>
-
-              <button 
-                type="button"
-                onClick={login}
-                className="w-full py-3 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-              >
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-                {language === 'MN' ? 'Google-ээр нэвтрэх' : 'Login with Google'}
               </button>
             </form>
           </div>
@@ -294,7 +369,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/20">
               <Leaf className="w-6 h-6" />
             </div>
-            <span className="text-xl font-bold tracking-tight">EcoPlan</span>
+            <span className="text-xl font-bold tracking-tight">CCRCC CALENDAR</span>
           </div>
 
           <nav className="flex-1 px-4 space-y-1 mt-4">
@@ -303,14 +378,28 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 key={item.path}
                 to={item.path}
                 className={({ isActive }) => cn(
-                  "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group",
+                  "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200",
                   isActive 
                     ? "bg-primary text-white shadow-md shadow-primary/20" 
                     : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
                 )}
               >
-                <item.icon className="w-5 h-5" />
-                <span className="font-medium">{item.label}</span>
+                {({ isActive }) => (
+                  <>
+                    <item.icon className="w-5 h-5" />
+                    <span className="font-medium flex-1">{item.label}</span>
+                    {'badge' in item && (item as any).badge > 0 && (
+                      <span className={cn(
+                        "min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold",
+                        isActive
+                          ? "bg-white/25 text-white"
+                          : "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-400"
+                      )}>
+                        {(item as any).badge}
+                      </span>
+                    )}
+                  </>
+                )}
               </NavLink>
             ))}
           </nav>
@@ -367,7 +456,18 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{profile?.displayName || user.displayName}</span>
               <span className="text-xs text-slate-500 dark:text-slate-400">{profile?.role === 'admin' ? t.admin : t.user}</span>
             </div>
-            <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-white dark:border-slate-700 shadow-sm bg-slate-200">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handlePhotoFileChange}
+              className="hidden"
+            />
+            <button
+              onClick={handleProfilePhotoClick}
+              disabled={uploadingPhoto}
+              className="w-10 h-10 rounded-full overflow-hidden border-2 border-white dark:border-slate-700 shadow-sm bg-slate-200 hover:ring-2 hover:ring-primary/50 transition-all disabled:opacity-50 cursor-pointer"
+            >
               {user.photoURL ? (
                 <img src={user.photoURL} alt={user.displayName || ''} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               ) : (
@@ -375,7 +475,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                   <User className="w-6 h-6 text-slate-500" />
                 </div>
               )}
-            </div>
+            </button>
           </div>
         </header>
 

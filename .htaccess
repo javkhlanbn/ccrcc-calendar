@@ -1,0 +1,13 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # If you keep backend API routes under /api, do not rewrite them to index.html.
+  RewriteCond %{REQUEST_URI} !^/api
+
+  # Serve existing files/directories normally.
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+
+  # SPA fallback for React Router (BrowserRouter).
+  RewriteRule ^ index.html [L]
+</IfModule>

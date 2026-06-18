@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Users, 
   CheckCircle2, 
   XCircle, 
   Clock, 
@@ -8,39 +7,60 @@ import {
   User as UserIcon,
   Search,
   Filter,
-  MoreVertical,
   Mail,
   Building2,
-  Calendar
+  Calendar,
+  Pencil
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
-import { db } from '../firebase';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { UserProfile, UserStatus } from '../types';
+import { Department, UserProfile, UserStatus } from '../types';
 import { format } from 'date-fns';
-import { cn } from '../lib/utils';
+import { Modal } from '../components/ui/Modal';
+
+const departments: Department[] = [
+  'Захиргаа, санхүүгийн хэлтэс',
+  'Төсөл, хөтөлбөр, хамтын ажиллагааны хэлтэс',
+  'Судалгаа, бүртгэл, баталгаажуулалтын хэлтэс',
+  'Монгол-Кувейтын байгаль хамгаалах судалгааны хэлтэс'
+];
 
 const AdminUsers: React.FC = () => {
-  const { language, updateUserStatus, profile } = useAppContext();
+  const { language, updateUserStatus, updateManagedUser, profile } = useAppContext();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<UserStatus | 'all'>('all');
+  const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [formData, setFormData] = useState({
+    firstName: '',
+    lastName: '',
+    department: departments[0] as Department,
+    password: '',
+  });
 
   useEffect(() => {
-    if (profile?.role !== 'admin') return;
-
-    const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const usersData = snapshot.docs.map(doc => ({
-        uid: doc.id,
-        ...doc.data()
-      })) as UserProfile[];
-      setUsers(usersData);
+    if (profile?.role !== 'admin') {
       setLoading(false);
-    });
+      return;
+    }
 
-    return () => unsubscribe();
+    const fetchUsers = async () => {
+      try {
+        setLoading(true);
+        const res = await fetch('/api/users');
+        if (!res.ok) throw new Error('Failed to fetch users');
+        const usersData = await res.json();
+        setUsers(usersData as UserProfile[]);
+      } catch (error) {
+        console.error('Users fetch error:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchUsers();
   }, [profile]);
 
   const filteredUsers = users.filter(user => {
@@ -74,6 +94,45 @@ const AdminUsers: React.FC = () => {
             {language === 'MN' ? 'Хүлээгдэж буй' : 'Pending'}
           </span>
         );
+    }
+  };
+
+  const openEditModal = (user: UserProfile) => {
+    setSelectedUser(user);
+    setFormData({
+      firstName: user.firstName,
+      lastName: user.lastName,
+      department: user.department,
+      password: '',
+    });
+    setIsModalOpen(true);
+  };
+
+  const handleSave = async () => {
+    if (!selectedUser) return;
+
+    try {
+      setIsSaving(true);
+      const updatedUser = await updateManagedUser(selectedUser.uid, {
+        firstName: formData.firstName.trim(),
+        lastName: formData.lastName.trim(),
+        department: formData.department,
+        password: formData.password.trim() || undefined,
+      });
+
+      setUsers(prev => prev.map(user => (user.uid === updatedUser.uid ? updatedUser : user)));
+      setIsModalOpen(false);
+      setSelectedUser(null);
+      setFormData({
+        firstName: '',
+        lastName: '',
+        department: departments[0],
+        password: '',
+      });
+    } catch (error: any) {
+      alert(error?.message || (language === 'MN' ? 'Хэрэглэгчийн мэдээлэл шинэчлэх үед алдаа гарлаа.' : 'Failed to update user.'));
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -191,9 +250,19 @@ const AdminUsers: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => openEditModal(user)}
+                          className="p-2 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/20 rounded-lg transition-colors"
+                          title={language === 'MN' ? 'Засах' : 'Edit'}
+                        >
+                          <Pencil className="w-5 h-5" />
+                        </button>
                         {user.status !== 'approved' && (
                           <button 
-                            onClick={() => updateUserStatus(user.uid, 'approved')}
+                            onClick={async () => {
+                              await updateUserStatus(user.uid, 'approved');
+                              setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, status: 'approved' } : u));
+                            }}
                             className="p-2 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors"
                             title={language === 'MN' ? 'Зөвшөөрөх' : 'Approve'}
                           >
@@ -202,7 +271,10 @@ const AdminUsers: React.FC = () => {
                         )}
                         {user.status !== 'rejected' && (
                           <button 
-                            onClick={() => updateUserStatus(user.uid, 'rejected')}
+                            onClick={async () => {
+                              await updateUserStatus(user.uid, 'rejected');
+                              setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, status: 'rejected' } : u));
+                            }}
                             className="p-2 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition-colors"
                             title={language === 'MN' ? 'Татгалзах' : 'Reject'}
                           >
@@ -218,6 +290,80 @@ const AdminUsers: React.FC = () => {
           </table>
         </div>
       </div>
+
+      <Modal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        title={language === 'MN' ? 'Хэрэглэгч засах' : 'Edit User'}
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-sm font-bold text-slate-500 dark:text-slate-400">{language === 'MN' ? 'Нэр' : 'First Name'}</label>
+              <input
+                type="text"
+                value={formData.firstName}
+                onChange={(e) => setFormData(prev => ({ ...prev, firstName: e.target.value }))}
+                className="input-field"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-bold text-slate-500 dark:text-slate-400">{language === 'MN' ? 'Овог' : 'Last Name'}</label>
+              <input
+                type="text"
+                value={formData.lastName}
+                onChange={(e) => setFormData(prev => ({ ...prev, lastName: e.target.value }))}
+                className="input-field"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-sm font-bold text-slate-500 dark:text-slate-400">{language === 'MN' ? 'Хэлтэс' : 'Department'}</label>
+            <select
+              value={formData.department}
+              onChange={(e) => setFormData(prev => ({ ...prev, department: e.target.value as Department }))}
+              className="input-field"
+            >
+              {departments.map((department) => (
+                <option key={department} value={department}>{department}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-sm font-bold text-slate-500 dark:text-slate-400">{language === 'MN' ? 'Шинэ нууц үг' : 'New Password'}</label>
+            <input
+              type="password"
+              value={formData.password}
+              onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
+              className="input-field"
+              placeholder={language === 'MN' ? 'Хоосон орхивол өөрчлөхгүй' : 'Leave blank to keep unchanged'}
+            />
+            <p className="text-[11px] text-slate-500">
+              {language === 'MN' ? 'Нууц үг солихгүй бол хоосон орхи.' : 'Leave blank if password should stay unchanged.'}
+            </p>
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <button
+              onClick={() => setIsModalOpen(false)}
+              className="flex-1 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 font-bold hover:bg-slate-200 transition-colors"
+            >
+              {language === 'MN' ? 'Цуцлах' : 'Cancel'}
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={isSaving}
+              className="flex-[2] py-3 rounded-xl bg-primary text-white font-bold hover:bg-primary-dark transition-colors shadow-lg shadow-primary/20 disabled:opacity-60"
+            >
+              {isSaving
+                ? (language === 'MN' ? 'Хадгалж байна...' : 'Saving...')
+                : (language === 'MN' ? 'Хадгалах' : 'Save')}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

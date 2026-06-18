@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { 
   Briefcase, 
   Calendar as CalendarIcon, 
@@ -11,9 +11,9 @@ import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
 import { Badge } from '../components/ui/Badge';
 import { motion } from 'motion/react';
-import { format, isSameDay, parseISO } from 'date-fns';
+import { format, parseISO, startOfDay, compareAsc, isValid, startOfMonth, endOfMonth, getDate, isSameDay } from 'date-fns';
 import { cn } from '../lib/utils';
-import { db, collection, query, orderBy, limit, onSnapshot, OperationType, handleFirestoreError } from '../firebase';
+import { UserProfile } from '../types';
 
 interface Activity {
   id: string;
@@ -25,25 +25,85 @@ interface Activity {
 }
 
 export const Dashboard: React.FC = () => {
-  const { projects, events, language, user } = useAppContext();
+  const { projects, events, language } = useAppContext();
   const [activities, setActivities] = useState<Activity[]>([]);
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [now, setNow] = useState(new Date());
   const t = translations[language];
 
   useEffect(() => {
-    if (!user) return;
+    const timer = setInterval(() => {
+      setNow(new Date());
+    }, 60000);
 
-    const q = query(collection(db, 'activities'), orderBy('createdAt', 'desc'), limit(5));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const activitiesData = snapshot.docs.map(doc => doc.data() as Activity);
-      setActivities(activitiesData);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'activities'));
+    return () => clearInterval(timer);
+  }, []);
 
-    return () => unsubscribe();
-  }, [user]);
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const res = await fetch('/api/users');
+        if (!res.ok) throw new Error('Failed to fetch users');
+        const data = await res.json();
+        setUsers(data as UserProfile[]);
+      } catch (error) {
+        console.error('Users fetch error:', error);
+      }
+    };
+
+    fetchUsers();
+  }, []);
+
+  const userNameById = useMemo(() => {
+    return users.reduce<Record<string, string>>((acc, user) => {
+      acc[user.uid] = user.displayName || `${user.lastName} ${user.firstName}`.trim();
+      return acc;
+    }, {});
+  }, [users]);
+
+  const upcomingEvents = useMemo(() => {
+    const today = startOfDay(now);
+
+    return events
+      .filter(event => {
+        const eventDate = parseISO(event.date);
+        return isValid(eventDate) && startOfDay(eventDate) >= today;
+      })
+      .sort((a, b) => compareAsc(parseISO(a.date), parseISO(b.date)));
+  }, [events, now]);
+
+  const monthStart = useMemo(() => startOfMonth(now), [now]);
+  const monthEnd = useMemo(() => endOfMonth(now), [now]);
+
+  const monthDays = useMemo(() => {
+    const daysInMonth = getDate(monthEnd);
+    return Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  }, [monthEnd]);
+
+  const currentMonthEvents = useMemo(() => {
+    return events
+      .filter(e => {
+        const eventDate = parseISO(e.date);
+        return isValid(eventDate) && eventDate >= monthStart && eventDate <= monthEnd;
+      })
+      .sort((a, b) => compareAsc(parseISO(a.date), parseISO(b.date)));
+  }, [events, monthStart, monthEnd]);
+
+  const hasEventOnDay = (day: number) => {
+    return events.some(e => {
+      const eventDate = parseISO(e.date);
+      if (!isValid(eventDate)) return false;
+      return (
+        eventDate >= monthStart &&
+        eventDate <= monthEnd &&
+        getDate(eventDate) === day
+      );
+    });
+  };
 
   const stats = [
     { label: t.totalProjects, value: projects.length, icon: Briefcase, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-    { label: t.upcomingEvents, value: events.length, icon: CalendarIcon, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    { label: t.upcomingEvents, value: upcomingEvents.length, icon: CalendarIcon, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
     { label: t.completedTasks, value: projects.filter(p => p.status === 'Completed').length, icon: CheckCircle2, color: 'text-amber-500', bg: 'bg-amber-500/10' },
   ];
 
@@ -59,6 +119,31 @@ export const Dashboard: React.FC = () => {
     if (diffInHours < 24) return language === 'MN' ? `${diffInHours} цагийн өмнө` : `${diffInHours}h ago`;
     const diffInDays = Math.floor(diffInHours / 24);
     return language === 'MN' ? `${diffInDays} өдрийн өмнө` : `${diffInDays}d ago`;
+  };
+
+  const getEventDisplayTitle = (eventId: string) => {
+    const event = events.find(item => item.id === eventId);
+    if (!event) return '';
+
+    if (event.category !== 'Birthday') {
+      return event.title;
+    }
+
+    if (event.birthdayUserId && userNameById[event.birthdayUserId]) {
+      return `🎂 ${userNameById[event.birthdayUserId]}`;
+    }
+
+    const matchedBirthdayEvent = events.find(item =>
+      item.category === 'Birthday' &&
+      item.birthdayUserId === event.birthdayUserId &&
+      item.id !== event.id &&
+      item.title &&
+      item.title.trim().length > 0 &&
+      item.title.trim().toLowerCase() !== 'birthday'
+    );
+
+    const birthdayName = matchedBirthdayEvent?.title || event.title;
+    return `🎂 ${birthdayName}`;
   };
 
   return (
@@ -100,8 +185,8 @@ export const Dashboard: React.FC = () => {
           </div>
           
           <div className="space-y-4">
-            {events.length > 0 ? (
-              events.slice(0, 4).map((event, i) => (
+            {upcomingEvents.length > 0 ? (
+              upcomingEvents.slice(0, 4).map((event, i) => (
                 <motion.div
                   key={event.id}
                   initial={{ opacity: 0, x: -20 }}
@@ -116,7 +201,7 @@ export const Dashboard: React.FC = () => {
                         <span className="text-xl font-bold text-slate-900 dark:text-slate-100">{format(parseISO(event.date), 'dd')}</span>
                       </div>
                       <div>
-                        <h3 className="font-bold text-slate-900 dark:text-slate-100 group-hover:text-primary transition-colors">{event.title}</h3>
+                        <h3 className="font-bold text-slate-900 dark:text-slate-100 group-hover:text-primary transition-colors">{getEventDisplayTitle(event.id)}</h3>
                         <p className="text-sm text-slate-500 dark:text-slate-400 line-clamp-1">{event.description}</p>
                         <div className="flex gap-2 mt-2">
                           <Badge variant={event.category === 'Project' ? 'primary' : event.category === 'Environmental' ? 'success' : 'secondary'}>
@@ -182,11 +267,9 @@ export const Dashboard: React.FC = () => {
               {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => (
                 <span key={d} className="text-[10px] font-bold text-slate-400 dark:text-slate-500">{d}</span>
               ))}
-              {Array.from({ length: 31 }).map((_, i) => {
-                const day = i + 1;
-                const dateStr = `2026-03-${day.toString().padStart(2, '0')}`;
-                const hasEvent = events.some(e => e.date === dateStr);
-                const isToday = day === 24; // Mock today as March 24th based on current date in context
+              {monthDays.map((day) => {
+                const hasEvent = hasEventOnDay(day);
+                const isToday = isSameDay(now, new Date(now.getFullYear(), now.getMonth(), day));
 
                 return (
                   <div 
@@ -202,20 +285,29 @@ export const Dashboard: React.FC = () => {
                 );
               })}
             </div>
+            <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800/50">
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">
+                {language === 'MN' ? 'Энэ сарын арга хэмжээнүүд' : 'This month events'}
+              </p>
+              <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                {currentMonthEvents.length > 0 ? (
+                  currentMonthEvents.map((event) => (
+                    <div key={event.id} className="text-xs text-slate-700 dark:text-slate-300 flex items-center justify-between gap-2">
+                      <span className="truncate">{getEventDisplayTitle(event.id)}</span>
+                      <span className="text-slate-500 dark:text-slate-400 flex-shrink-0">{format(parseISO(event.date), 'MM/dd')}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-slate-400 dark:text-slate-500">
+                    {language === 'MN' ? 'Энэ сард арга хэмжээ байхгүй' : 'No events this month'}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Environmental Awareness Card */}
-          <div className="card bg-emerald-600 text-white border-none overflow-hidden relative group">
-            <div className="absolute -right-4 -bottom-4 w-32 h-32 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-500" />
-            <div className="relative z-10">
-              <TrendingUp className="w-8 h-8 mb-4" />
-              <h3 className="text-lg font-bold mb-2">{t.environmentalImpact}</h3>
-              <p className="text-emerald-100 text-sm mb-4">{t.impactDescription}</p>
-              <button className="bg-white text-emerald-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-emerald-50 transition-colors">
-                {t.viewReport}
-              </button>
-            </div>
-          </div>
+         
         </div>
       </div>
     </div>
