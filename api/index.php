@@ -179,6 +179,39 @@ function db(): PDO
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
 
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS procurement_plans (
+            id VARCHAR(36) PRIMARY KEY,
+            idx INT NULL,
+            code VARCHAR(191),
+            name TEXT,
+            type VARCHAR(100),
+            budget_cost DECIMAL(15,2) NOT NULL DEFAULT 0,
+            year_financing DECIMAL(15,2) NOT NULL DEFAULT 0,
+            tender_method VARCHAR(255),
+            tender_month VARCHAR(255),
+            sustainable VARCHAR(100),
+            notes TEXT,
+            project_name VARCHAR(255),
+            implement_period VARCHAR(255),
+            committee_formed VARCHAR(255),
+            advertised VARCHAR(255),
+            tender_opened VARCHAR(255),
+            committee_met VARCHAR(255),
+            notice_sent VARCHAR(255),
+            contract_signed VARCHAR(255),
+            contract_value DECIMAL(15,2) NOT NULL DEFAULT 0,
+            payment1 DECIMAL(15,2) NOT NULL DEFAULT 0,
+            payment2 DECIMAL(15,2) NOT NULL DEFAULT 0,
+            payment3 DECIMAL(15,2) NOT NULL DEFAULT 0,
+            variance VARCHAR(255),
+            extra_notes TEXT,
+            visible_to_user_ids LONGTEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
     if (!column_exists($pdo, 'users', 'photo_url')) {
         $pdo->exec('ALTER TABLE users ADD COLUMN photo_url LONGTEXT NULL AFTER last_name');
     }
@@ -221,6 +254,40 @@ function json_field($value): array
 
     $decoded = json_decode((string)$value, true);
     return is_array($decoded) ? $decoded : [];
+}
+
+// Map a procurement-plan request body (camelCase) to DB columns (snake_case).
+function procurement_payload(array $body): array
+{
+    $num = static fn ($v) => ($v === null || $v === '') ? 0 : (float)$v;
+    $idx = $body['idx'] ?? null;
+    return [
+        'idx' => ($idx === null || $idx === '') ? null : (int)$idx,
+        'code' => (string)($body['code'] ?? ''),
+        'name' => (string)($body['name'] ?? ''),
+        'type' => (string)($body['type'] ?? ''),
+        'budget_cost' => $num($body['budgetCost'] ?? 0),
+        'year_financing' => $num($body['yearFinancing'] ?? 0),
+        'tender_method' => (string)($body['tenderMethod'] ?? ''),
+        'tender_month' => (string)($body['tenderMonth'] ?? ''),
+        'sustainable' => (string)($body['sustainable'] ?? ''),
+        'notes' => (string)($body['notes'] ?? ''),
+        'project_name' => (string)($body['projectName'] ?? ''),
+        'implement_period' => (string)($body['implementPeriod'] ?? ''),
+        'committee_formed' => (string)($body['committeeFormed'] ?? ''),
+        'advertised' => (string)($body['advertised'] ?? ''),
+        'tender_opened' => (string)($body['tenderOpened'] ?? ''),
+        'committee_met' => (string)($body['committeeMet'] ?? ''),
+        'notice_sent' => (string)($body['noticeSent'] ?? ''),
+        'contract_signed' => (string)($body['contractSigned'] ?? ''),
+        'contract_value' => $num($body['contractValue'] ?? 0),
+        'payment1' => $num($body['payment1'] ?? 0),
+        'payment2' => $num($body['payment2'] ?? 0),
+        'payment3' => $num($body['payment3'] ?? 0),
+        'variance' => (string)($body['variance'] ?? ''),
+        'extra_notes' => (string)($body['extraNotes'] ?? ''),
+        'visible_to_user_ids' => json_encode(is_array($body['visibleToUserIds'] ?? null) ? $body['visibleToUserIds'] : []),
+    ];
 }
 
 function to_iso($value): string
@@ -702,6 +769,88 @@ try {
     if ($method === 'DELETE' && preg_match('#^/tasks/([^/]+)$#', $route, $matches)) {
         $id = urldecode((string)$matches[1]);
         $stmt = $pdo->prepare('DELETE FROM tasks WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'GET' && $route === '/procurement-plans') {
+        $rows = $pdo->query('SELECT * FROM procurement_plans ORDER BY idx ASC, created_at ASC')->fetchAll();
+        $plans = [];
+        foreach ($rows ?: [] as $row) {
+            $plans[] = [
+                'id' => $row['id'],
+                'idx' => ($row['idx'] === null) ? null : (int)$row['idx'],
+                'code' => $row['code'] ?? '',
+                'name' => $row['name'] ?? '',
+                'type' => $row['type'] ?? '',
+                'budgetCost' => (float)($row['budget_cost'] ?? 0),
+                'yearFinancing' => (float)($row['year_financing'] ?? 0),
+                'tenderMethod' => $row['tender_method'] ?? '',
+                'tenderMonth' => $row['tender_month'] ?? '',
+                'sustainable' => $row['sustainable'] ?? '',
+                'notes' => $row['notes'] ?? '',
+                'projectName' => $row['project_name'] ?? '',
+                'implementPeriod' => $row['implement_period'] ?? '',
+                'committeeFormed' => $row['committee_formed'] ?? '',
+                'advertised' => $row['advertised'] ?? '',
+                'tenderOpened' => $row['tender_opened'] ?? '',
+                'committeeMet' => $row['committee_met'] ?? '',
+                'noticeSent' => $row['notice_sent'] ?? '',
+                'contractSigned' => $row['contract_signed'] ?? '',
+                'contractValue' => (float)($row['contract_value'] ?? 0),
+                'payment1' => (float)($row['payment1'] ?? 0),
+                'payment2' => (float)($row['payment2'] ?? 0),
+                'payment3' => (float)($row['payment3'] ?? 0),
+                'variance' => $row['variance'] ?? '',
+                'extraNotes' => $row['extra_notes'] ?? '',
+                'visibleToUserIds' => json_field($row['visible_to_user_ids'] ?? null),
+            ];
+        }
+        json_response($plans);
+    }
+
+    if ($method === 'POST' && $route === '/procurement-plans') {
+        $id = (string)($body['id'] ?? '');
+        $name = trim((string)($body['name'] ?? ''));
+        if ($id === '' || $name === '') {
+            json_response(['message' => 'Худалдан авах бараа/үйлчилгээний нэрийг оруулна уу.'], 400);
+        }
+
+        $params = array_merge(['id' => $id], procurement_payload($body));
+        $stmt = $pdo->prepare(
+            'INSERT INTO procurement_plans
+                (id, idx, code, name, type, budget_cost, year_financing, tender_method, tender_month, sustainable, notes,
+                 project_name, implement_period, committee_formed, advertised, tender_opened, committee_met, notice_sent,
+                 contract_signed, contract_value, payment1, payment2, payment3, variance, extra_notes, visible_to_user_ids)
+             VALUES (:id, :idx, :code, :name, :type, :budget_cost, :year_financing, :tender_method, :tender_month, :sustainable, :notes,
+                 :project_name, :implement_period, :committee_formed, :advertised, :tender_opened, :committee_met, :notice_sent,
+                 :contract_signed, :contract_value, :payment1, :payment2, :payment3, :variance, :extra_notes, :visible_to_user_ids)'
+        );
+        $stmt->execute($params);
+        json_response(['success' => true, 'id' => $id], 201);
+    }
+
+    if ($method === 'PUT' && preg_match('#^/procurement-plans/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $params = array_merge(procurement_payload($body), ['id' => $id]);
+        $stmt = $pdo->prepare(
+            'UPDATE procurement_plans SET
+                idx = :idx, code = :code, name = :name, type = :type, budget_cost = :budget_cost, year_financing = :year_financing,
+                tender_method = :tender_method, tender_month = :tender_month, sustainable = :sustainable, notes = :notes,
+                project_name = :project_name, implement_period = :implement_period, committee_formed = :committee_formed,
+                advertised = :advertised, tender_opened = :tender_opened, committee_met = :committee_met, notice_sent = :notice_sent,
+                contract_signed = :contract_signed, contract_value = :contract_value, payment1 = :payment1, payment2 = :payment2,
+                payment3 = :payment3, variance = :variance, extra_notes = :extra_notes, visible_to_user_ids = :visible_to_user_ids,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE id = :id'
+        );
+        $stmt->execute($params);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/procurement-plans/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $stmt = $pdo->prepare('DELETE FROM procurement_plans WHERE id = :id');
         $stmt->execute(['id' => $id]);
         json_response(['success' => true]);
     }

@@ -457,15 +457,25 @@ export const ProcurementPlan: React.FC = () => {
       ) : null;
     }
     if (col.key === 'name') {
-      return <span className="font-semibold text-slate-900 dark:text-slate-100">{String(value || '')}</span>;
+      return <div className="font-semibold text-slate-900 dark:text-slate-100 line-clamp-3 break-words" title={String(value || '')}>{String(value || '')}</div>;
     }
     if (col.key === 'code') {
-      return <span className="text-xs text-slate-500 dark:text-slate-400">{String(value || '')}</span>;
+      return <div className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 break-words">{String(value || '')}</div>;
     }
-    return <span className="text-slate-600 dark:text-slate-400">{String(value || '')}</span>;
+    return <div className="text-slate-600 dark:text-slate-400 line-clamp-3 break-words" title={String(value || '')}>{String(value || '')}</div>;
   };
 
   const colName = (c: ColumnDef) => (isMN ? c.mn : c.en);
+
+  // Compact width hints per column so the table squeezes instead of stretching wide.
+  const colSize = (c: ColumnDef) => {
+    if (c.key === 'idx') return 'w-10 min-w-[40px]';
+    if (c.money) return 'min-w-[100px]';
+    if (c.badge) return 'min-w-[80px] max-w-[140px]';
+    if (c.key === 'code') return 'min-w-[70px] max-w-[110px]';
+    if (c.wide) return 'min-w-[170px] max-w-[230px]';
+    return 'min-w-[100px] max-w-[150px]';
+  };
 
   return (
     <section className="space-y-6">
@@ -626,17 +636,16 @@ export const ProcurementPlan: React.FC = () => {
             <p className="text-sm">{t('Мэдээлэл олдсонгүй', 'No records found')}</p>
           </div>
         ) : (
-          <table className="w-full min-w-max text-left text-sm print:min-w-0">
+          <table className="w-full text-left text-sm print:min-w-0">
             <thead>
               <tr>
                 {shownColumns.map(c => (
                   <th
                     key={c.key}
                     className={cn(
-                      'sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 px-3 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase border-b border-slate-200 dark:border-slate-700 shadow-sm',
-                      c.right ? 'text-right' : '',
-                      c.wide ? 'min-w-[280px]' : 'whitespace-nowrap',
-                      c.wrap ? 'whitespace-normal min-w-[160px]' : ''
+                      'sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 px-2 py-2 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase border-b border-slate-200 dark:border-slate-700 shadow-sm align-bottom whitespace-normal break-words leading-tight',
+                      c.right ? 'text-right' : 'text-left',
+                      colSize(c)
                     )}
                   >
                     {colName(c)}
@@ -661,10 +670,10 @@ export const ProcurementPlan: React.FC = () => {
                     <td
                       key={c.key}
                       className={cn(
-                        'px-3 py-3',
+                        'px-2 py-2 align-top text-xs',
                         c.right ? 'text-right' : '',
-                        c.wrap || c.wide ? 'whitespace-normal' : 'whitespace-nowrap',
-                        c.wrap ? 'text-xs' : ''
+                        colSize(c),
+                        c.money || c.badge || c.key === 'idx' ? 'whitespace-nowrap' : 'whitespace-normal break-words'
                       )}
                     >
                       {renderCell(plan, c)}
@@ -689,7 +698,7 @@ export const ProcurementPlan: React.FC = () => {
             <tfoot>
               <tr className="bg-slate-50 dark:bg-slate-800/50 border-t-2 border-slate-200 dark:border-slate-700 font-bold">
                 {shownColumns.map((c, i) => (
-                  <td key={c.key} className={cn('px-3 py-3 whitespace-nowrap', c.right ? 'text-right' : '')}>
+                  <td key={c.key} className={cn('px-2 py-2 text-xs whitespace-nowrap', c.right ? 'text-right' : '', colSize(c))}>
                     {c.money ? (
                       <span className="tabular-nums text-slate-900 dark:text-slate-100">{fmt(moneyTotals[c.key] || 0)}</span>
                     ) : i === 0 ? (
