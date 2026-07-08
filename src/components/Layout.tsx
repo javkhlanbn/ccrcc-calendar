@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { 
-  LayoutDashboard, 
-  Calendar as CalendarIcon, 
-  Briefcase, 
-  Settings, 
+  LayoutDashboard,
+  Calendar as CalendarIcon,
+  Briefcase,
+  Settings,
   LogOut,
   Leaf,
   Globe,
@@ -21,7 +21,8 @@ import {
   Mail,
   Lock,
   UserCircle,
-  ClipboardList
+  ClipboardList,
+  ListChecks
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
@@ -156,6 +157,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     { icon: LayoutDashboard, label: t.dashboard, path: '/' },
     { icon: CalendarIcon, label: t.calendar, path: '/calendar' },
     { icon: Briefcase, label: t.projects, path: '/projects' },
+    { icon: ListChecks, label: language === 'MN' ? 'Захирлын үүрэг' : "Director's Tasks", path: '/director-tasks' },
   ];
 
   if (profile?.role !== 'admin') {

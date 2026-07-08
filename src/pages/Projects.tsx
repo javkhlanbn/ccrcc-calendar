@@ -39,6 +39,7 @@ export const Projects: React.FC = () => {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [isVisibleUsersOpen, setIsVisibleUsersOpen] = useState(false);
+  const [visibleUsersDeptFilter, setVisibleUsersDeptFilter] = useState<string>('all');
   const [formData, setFormData] = useState<Partial<Project>>({
     title: '', description: '', startDate: '', endDate: '',
     status: 'Planning', tags: [], visibleToUserIds: [],
@@ -49,6 +50,7 @@ export const Projects: React.FC = () => {
   const [isTaskEditMode, setIsTaskEditMode] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isAssignUsersOpen, setIsAssignUsersOpen] = useState(false);
+  const [assignUsersDeptFilter, setAssignUsersDeptFilter] = useState<string>('all');
   const [taskFormData, setTaskFormData] = useState<Partial<Task>>({
     projectId: '', title: '', description: '', assignedToUserIds: [], dueDate: '', status: 'Pending', attachments: [],
   });
@@ -58,6 +60,13 @@ export const Projects: React.FC = () => {
 
   // Project plan view state
   const [showProjectPlan, setShowProjectPlan] = useState(false);
+
+  const departments = [
+    { key: 'Захиргаа, санхүүгийн хэлтэс', label: 'Захиргаа' },
+    { key: 'Төсөл, хөтөлбөр, хамтын ажиллагааны хэлтэс', label: 'Төсөл' },
+    { key: 'Судалгаа, бүртгэл, баталгаажуулалтын хэлтэс', label: 'Судалгаа' },
+    { key: 'Монгол-Кувейтын байгаль хамгаалах судалгааны хэлтэс', label: 'МК' },
+  ];
 
   useEffect(() => {
     const fetchUsers = async () => {
@@ -107,9 +116,11 @@ export const Projects: React.FC = () => {
   };
 
   const toggleAllVisibleUsers = () => {
-    const allUserIds = users.map(u => u.uid);
-    const isAllSelected = allUserIds.every(id => (formData.visibleToUserIds || []).includes(id));
-    setFormData({ ...formData, visibleToUserIds: isAllSelected ? [] : allUserIds });
+    const filteredUsers = visibleUsersDeptFilter === 'all' ? users : users.filter(u => u.department === visibleUsersDeptFilter);
+    const filteredIds = filteredUsers.map(u => u.uid);
+    const current = formData.visibleToUserIds || [];
+    const allSelected = filteredIds.length > 0 && filteredIds.every(id => current.includes(id));
+    setFormData({ ...formData, visibleToUserIds: allSelected ? current.filter(id => !filteredIds.includes(id)) : [...new Set([...current, ...filteredIds])] });
   };
 
   // ---- Task CRUD handlers ----
@@ -166,9 +177,11 @@ export const Projects: React.FC = () => {
   };
 
   const toggleAllAssignUsers = () => {
-    const allUserIds = users.map(u => u.uid);
-    const isAllSelected = allUserIds.every(id => (taskFormData.assignedToUserIds || []).includes(id));
-    setTaskFormData({ ...taskFormData, assignedToUserIds: isAllSelected ? [] : allUserIds });
+    const filteredUsers = assignUsersDeptFilter === 'all' ? users : users.filter(u => u.department === assignUsersDeptFilter);
+    const filteredIds = filteredUsers.map(u => u.uid);
+    const current = taskFormData.assignedToUserIds || [];
+    const allSelected = filteredIds.length > 0 && filteredIds.every(id => current.includes(id));
+    setTaskFormData({ ...taskFormData, assignedToUserIds: allSelected ? current.filter(id => !filteredIds.includes(id)) : [...new Set([...current, ...filteredIds])] });
   };
 
   const readTaskFileAsDataUrl = (file: File) =>
@@ -767,17 +780,40 @@ export const Projects: React.FC = () => {
                 <span className="text-slate-400 text-xs">▼</span>
               </button>
               {isVisibleUsersOpen && (
-                <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 shadow-lg max-h-52 overflow-y-auto space-y-2">
-                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200 pb-2 border-b border-slate-100 dark:border-slate-800">
-                    <input type="checkbox" checked={users.length > 0 && users.every(u => (formData.visibleToUserIds || []).includes(u.uid))} onChange={toggleAllVisibleUsers} />
-                    <span>{language === 'MN' ? 'Бүгд' : 'All'}</span>
-                  </label>
-                  {users.map(u => (
-                    <label key={u.uid} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                      <input type="checkbox" checked={(formData.visibleToUserIds || []).includes(u.uid)} onChange={() => toggleVisibleUser(u.uid)} />
-                      <span>{u.displayName}</span>
-                    </label>
-                  ))}
+                <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg">
+                  <div className="flex gap-1 p-2 border-b border-slate-100 dark:border-slate-800 flex-wrap">
+                    <button type="button" onClick={() => setVisibleUsersDeptFilter('all')} className={cn("px-2 py-0.5 rounded-full text-xs font-bold transition-all", visibleUsersDeptFilter === 'all' ? "bg-primary text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500")}>
+                      {language === 'MN' ? 'Бүгд' : 'All'}
+                    </button>
+                    {departments.map(dept => (
+                      <button key={dept.key} type="button" onClick={() => setVisibleUsersDeptFilter(dept.key)} className={cn("px-2 py-0.5 rounded-full text-xs font-bold transition-all", visibleUsersDeptFilter === dept.key ? "bg-primary text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500")}>
+                        {dept.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="p-3 max-h-44 overflow-y-auto space-y-2">
+                    {(() => {
+                      const filtered = visibleUsersDeptFilter === 'all' ? users : users.filter(u => u.department === visibleUsersDeptFilter);
+                      const filteredIds = filtered.map(u => u.uid);
+                      const current = formData.visibleToUserIds || [];
+                      const allSelected = filteredIds.length > 0 && filteredIds.every(id => current.includes(id));
+                      return (
+                        <>
+                          <label className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200 pb-2 border-b border-slate-100 dark:border-slate-800">
+                            <input type="checkbox" checked={allSelected} onChange={toggleAllVisibleUsers} />
+                            <span>{language === 'MN' ? 'Бүгд сонгох' : 'Select all'} ({filtered.filter(u => current.includes(u.uid)).length}/{filtered.length})</span>
+                          </label>
+                          {filtered.map(u => (
+                            <label key={u.uid} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                              <input type="checkbox" checked={current.includes(u.uid)} onChange={() => toggleVisibleUser(u.uid)} />
+                              <span>{u.displayName}</span>
+                            </label>
+                          ))}
+                          {filtered.length === 0 && <p className="text-xs text-slate-400 text-center py-2">{language === 'MN' ? 'Ажилтан байхгүй' : 'No users'}</p>}
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
               )}
             </div>
@@ -831,17 +867,40 @@ export const Projects: React.FC = () => {
                 <span className="text-slate-400 text-xs">▼</span>
               </button>
               {isAssignUsersOpen && (
-                <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 shadow-lg max-h-52 overflow-y-auto space-y-2">
-                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200 pb-2 border-b border-slate-100 dark:border-slate-800">
-                    <input type="checkbox" checked={users.length > 0 && users.every(u => (taskFormData.assignedToUserIds || []).includes(u.uid))} onChange={toggleAllAssignUsers} />
-                    <span>{language === 'MN' ? 'Бүгд' : 'All'}</span>
-                  </label>
-                  {users.map(u => (
-                    <label key={u.uid} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                      <input type="checkbox" checked={(taskFormData.assignedToUserIds || []).includes(u.uid)} onChange={() => toggleAssignUser(u.uid)} />
-                      <span>{u.displayName}</span>
-                    </label>
-                  ))}
+                <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg">
+                  <div className="flex gap-1 p-2 border-b border-slate-100 dark:border-slate-800 flex-wrap">
+                    <button type="button" onClick={() => setAssignUsersDeptFilter('all')} className={cn("px-2 py-0.5 rounded-full text-xs font-bold transition-all", assignUsersDeptFilter === 'all' ? "bg-primary text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500")}>
+                      {language === 'MN' ? 'Бүгд' : 'All'}
+                    </button>
+                    {departments.map(dept => (
+                      <button key={dept.key} type="button" onClick={() => setAssignUsersDeptFilter(dept.key)} className={cn("px-2 py-0.5 rounded-full text-xs font-bold transition-all", assignUsersDeptFilter === dept.key ? "bg-primary text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500")}>
+                        {dept.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="p-3 max-h-44 overflow-y-auto space-y-2">
+                    {(() => {
+                      const filtered = assignUsersDeptFilter === 'all' ? users : users.filter(u => u.department === assignUsersDeptFilter);
+                      const filteredIds = filtered.map(u => u.uid);
+                      const current = taskFormData.assignedToUserIds || [];
+                      const allSelected = filteredIds.length > 0 && filteredIds.every(id => current.includes(id));
+                      return (
+                        <>
+                          <label className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200 pb-2 border-b border-slate-100 dark:border-slate-800">
+                            <input type="checkbox" checked={allSelected} onChange={toggleAllAssignUsers} />
+                            <span>{language === 'MN' ? 'Бүгд сонгох' : 'Select all'} ({filtered.filter(u => current.includes(u.uid)).length}/{filtered.length})</span>
+                          </label>
+                          {filtered.map(u => (
+                            <label key={u.uid} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                              <input type="checkbox" checked={current.includes(u.uid)} onChange={() => toggleAssignUser(u.uid)} />
+                              <span>{u.displayName}</span>
+                            </label>
+                          ))}
+                          {filtered.length === 0 && <p className="text-xs text-slate-400 text-center py-2">{language === 'MN' ? 'Ажилтан байхгүй' : 'No users'}</p>}
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
               )}
             </div>

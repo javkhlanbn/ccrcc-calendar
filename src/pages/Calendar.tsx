@@ -46,7 +46,15 @@ export const Calendar: React.FC = () => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [isVisibleUsersOpen, setIsVisibleUsersOpen] = useState(false);
+  const [visibleUsersDeptFilter, setVisibleUsersDeptFilter] = useState<string>('all');
   const [hoveredDayKey, setHoveredDayKey] = useState<string | null>(null);
+
+  const departments = [
+    { key: 'Захиргаа, санхүүгийн хэлтэс', label: 'Захиргаа' },
+    { key: 'Төсөл, хөтөлбөр, хамтын ажиллагааны хэлтэс', label: 'Төсөл' },
+    { key: 'Судалгаа, бүртгэл, баталгаажуулалтын хэлтэс', label: 'Судалгаа' },
+    { key: 'Монгол-Кувейтын байгаль хамгаалах судалгааны хэлтэс', label: 'МК' },
+  ];
 
   // Form state
   const [formData, setFormData] = useState<Partial<Event>>({
@@ -238,9 +246,17 @@ export const Calendar: React.FC = () => {
   };
 
   const toggleAllVisibleUsers = () => {
+    const filteredUsers = visibleUsersDeptFilter === 'all'
+      ? users
+      : users.filter(u => u.department === visibleUsersDeptFilter);
+    const filteredIds = filteredUsers.map(u => u.uid);
+    const current = formData.visibleToUserIds || [];
+    const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => current.includes(id));
     setFormData({
       ...formData,
-      visibleToUserIds: isAllVisibleSelected ? [] : users.map(user => user.uid),
+      visibleToUserIds: allFilteredSelected
+        ? current.filter(id => !filteredIds.includes(id))
+        : [...new Set([...current, ...filteredIds])],
     });
   };
 
@@ -663,27 +679,51 @@ export const Calendar: React.FC = () => {
               </button>
 
               {isVisibleUsersOpen && (
-                <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 shadow-lg max-h-52 overflow-y-auto space-y-2">
-                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300 pb-2 border-b border-slate-200 dark:border-slate-800">
-                    <input
-                      type="checkbox"
-                      checked={isAllVisibleSelected}
-                      onChange={toggleAllVisibleUsers}
-                    />
-                    <span>
-                      {language === 'MN' ? 'Бүгд' : 'All'} ({selectedVisibleCount}/{totalVisibleUsers})
-                    </span>
-                  </label>
-                  {users.map(user => (
-                    <label key={user.uid} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={(formData.visibleToUserIds || []).includes(user.uid)}
-                        onChange={() => toggleVisibleUser(user.uid)}
-                      />
-                      <span>{user.displayName}</span>
-                    </label>
-                  ))}
+                <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg">
+                  <div className="flex gap-1 p-2 border-b border-slate-100 dark:border-slate-800 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleUsersDeptFilter('all')}
+                      className={cn("px-2 py-0.5 rounded-full text-xs font-bold transition-all", visibleUsersDeptFilter === 'all' ? "bg-primary text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500")}
+                    >
+                      {language === 'MN' ? 'Бүгд' : 'All'}
+                    </button>
+                    {departments.map(dept => (
+                      <button
+                        key={dept.key}
+                        type="button"
+                        onClick={() => setVisibleUsersDeptFilter(dept.key)}
+                        className={cn("px-2 py-0.5 rounded-full text-xs font-bold transition-all", visibleUsersDeptFilter === dept.key ? "bg-primary text-white" : "bg-slate-100 dark:bg-slate-800 text-slate-500")}
+                      >
+                        {dept.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="p-3 max-h-44 overflow-y-auto space-y-2">
+                    {(() => {
+                      const filteredUsers = visibleUsersDeptFilter === 'all' ? users : users.filter(u => u.department === visibleUsersDeptFilter);
+                      const filteredIds = filteredUsers.map(u => u.uid);
+                      const current = formData.visibleToUserIds || [];
+                      const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => current.includes(id));
+                      return (
+                        <>
+                          <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300 pb-2 border-b border-slate-200 dark:border-slate-800">
+                            <input type="checkbox" checked={allFilteredSelected} onChange={toggleAllVisibleUsers} />
+                            <span>{language === 'MN' ? 'Бүгд сонгох' : 'Select all'} ({filteredUsers.filter(u => current.includes(u.uid)).length}/{filteredUsers.length})</span>
+                          </label>
+                          {filteredUsers.map(user => (
+                            <label key={user.uid} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                              <input type="checkbox" checked={current.includes(user.uid)} onChange={() => toggleVisibleUser(user.uid)} />
+                              <span>{user.displayName}</span>
+                            </label>
+                          ))}
+                          {filteredUsers.length === 0 && (
+                            <p className="text-xs text-slate-400 text-center py-2">{language === 'MN' ? 'Ажилтан байхгүй' : 'No users'}</p>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
               )}
             </div>

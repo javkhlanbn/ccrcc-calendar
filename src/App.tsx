@@ -6,6 +6,7 @@ import { Calendar } from './pages/Calendar';
 import { Projects } from './pages/Projects';
 import { MyTasks } from './pages/MyTasks';
 import AdminUsers from './pages/AdminUsers';
+import { DirectorTasks } from './pages/DirectorTasks';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
               <Route path="/projects" element={<Projects />} />
               <Route path="/my-tasks" element={<MyTasks />} />
               <Route path="/admin/users" element={<AdminUsers />} />
+              <Route path="/director-tasks" element={<DirectorTasks />} />
             </Routes>
           </Layout>
         </Router>

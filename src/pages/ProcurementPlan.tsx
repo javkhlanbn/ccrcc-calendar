@@ -331,18 +331,24 @@ export const ProcurementPlan: React.FC = () => {
     setIsModalOpen(true);
   };
 
+  // Хэтрэлт / Хэмнэлт = Тухайн онд санхүүжих дүн − Гэрээний нийт дүн (автомат)
+  const computedVarianceNum = (Number(formData.yearFinancing) || 0) - (Number(formData.contractValue) || 0);
+
   const handleSave = async () => {
     if (!canManage) return;
     if (!String(formData.name || '').trim()) {
       alert(t('Худалдан авах бараа/үйлчилгээний нэрийг оруулна уу.', 'Please enter the procurement item name.'));
       return;
     }
+    // Variance-ийг хадгалахаас өмнө автоматаар дахин тооцоолж тогтмол байлгана.
+    const variance = fmt(computedVarianceNum);
     try {
       if (isEditMode && selected) {
-        await updateProcurementPlan({ ...selected, ...formData } as ProcurementPlanType);
+        await updateProcurementPlan({ ...selected, ...formData, variance } as ProcurementPlanType);
       } else {
         await addProcurementPlan({
           ...formData,
+          variance,
           id: Math.random().toString(36).slice(2, 11),
         } as ProcurementPlanType);
       }
@@ -846,7 +852,29 @@ export const ProcurementPlan: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-4">
             <Field label={t('Гэрээний нийт үнийн дүн', 'Total contract value')} type="number" value={formData.contractValue} onChange={v => setFormData({ ...formData, contractValue: Number(v) || 0 })} />
-            <Field label={t('Хэтрэлт / Хэмнэлт', 'Overrun / Savings')} value={formData.variance} onChange={v => setFormData({ ...formData, variance: v })} />
+            <div className="space-y-1">
+              <label className="text-sm font-bold text-slate-500 dark:text-slate-400">{t('Хэтрэлт / Хэмнэлт', 'Overrun / Savings')}</label>
+              <div className="input-field flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 cursor-not-allowed">
+                <span
+                  className={cn(
+                    'tabular-nums font-semibold',
+                    computedVarianceNum < 0
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : computedVarianceNum > 0
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-slate-500'
+                  )}
+                >
+                  {fmt(computedVarianceNum)}
+                </span>
+                <span className="text-xs text-slate-400">
+                  {computedVarianceNum < 0 ? t('Хэтрэлт', 'Overrun') : computedVarianceNum > 0 ? t('Хэмнэлт', 'Savings') : ''}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">
+                {t('Тухайн онд санхүүжих дүн − Гэрээний нийт дүн (автомат)', 'Year financing − contract value (auto)')}
+              </p>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-4">
             <Field label={t('Эхний төлбөр', 'Payment 1')} type="number" value={formData.payment1} onChange={v => setFormData({ ...formData, payment1: Number(v) || 0 })} />

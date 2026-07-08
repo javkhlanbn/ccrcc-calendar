@@ -225,6 +225,27 @@ function db(): PDO
         $pdo->exec('ALTER TABLE tasks ADD COLUMN attachments LONGTEXT NULL AFTER status');
     }
 
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS director_tasks (
+            id VARCHAR(36) PRIMARY KEY,
+            title VARCHAR(500) NOT NULL,
+            description LONGTEXT,
+            assigned_to_user_ids LONGTEXT,
+            department VARCHAR(255),
+            priority ENUM('High','Medium','Low') NOT NULL DEFAULT 'Medium',
+            start_date DATE NOT NULL,
+            due_date DATE NOT NULL,
+            status ENUM('NotStarted','InProgress','Completed','Cancelled') NOT NULL DEFAULT 'NotStarted',
+            progress INT NOT NULL DEFAULT 0,
+            attachments LONGTEXT,
+            notes LONGTEXT,
+            activity_log LONGTEXT,
+            created_by VARCHAR(36),
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
     $stmt = $pdo->prepare('SELECT id FROM users WHERE username = :username LIMIT 1');
     $stmt->execute(['username' => $adminUsername]);
     $admin = $stmt->fetch();
@@ -851,6 +872,165 @@ try {
     if ($method === 'DELETE' && preg_match('#^/procurement-plans/([^/]+)$#', $route, $matches)) {
         $id = urldecode((string)$matches[1]);
         $stmt = $pdo->prepare('DELETE FROM procurement_plans WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        json_response(['success' => true]);
+    }
+
+    // ---- Director Tasks ----
+    if ($method === 'GET' && $route === '/director-tasks') {
+        $rows = $pdo->query('SELECT * FROM director_tasks ORDER BY created_at DESC')->fetchAll();
+        $items = [];
+        foreach ($rows ?: [] as $row) {
+            $items[] = [
+                'id' => $row['id'],
+                'title' => $row['title'],
+                'description' => $row['description'] ?? '',
+                'assignedToUserIds' => json_field($row['assigned_to_user_ids'] ?? null),
+                'department' => $row['department'] ?? '',
+                'priority' => $row['priority'],
+                'startDate' => substr((string)$row['start_date'], 0, 10),
+                'dueDate' => substr((string)$row['due_date'], 0, 10),
+                'status' => $row['status'],
+                'progress' => (int)($row['progress'] ?? 0),
+                'attachments' => json_field($row['attachments'] ?? null),
+                'notes' => $row['notes'] ?? '',
+                'activityLog' => json_field($row['activity_log'] ?? null),
+                'createdBy' => $row['created_by'] ?? '',
+                'createdAt' => to_iso($row['created_at'] ?? ''),
+                'updatedAt' => to_iso($row['updated_at'] ?? ''),
+            ];
+        }
+        json_response($items);
+    }
+
+    if ($method === 'POST' && $route === '/director-tasks') {
+        $id = (string)($body['id'] ?? '');
+        $title = trim((string)($body['title'] ?? ''));
+        $startDate = (string)($body['startDate'] ?? '');
+        $dueDate = (string)($body['dueDate'] ?? '');
+        if ($id === '' || $title === '' || $startDate === '' || $dueDate === '') {
+            json_response(['message' => 'Үндсэн талбарыг бөглөнө үү.'], 400);
+        }
+        $activityLog = [[
+            'id' => bin2hex(random_bytes(5)),
+            'type' => 'created',
+            'description' => 'Үүрэг үүсгэгдсэн',
+            'userId' => (string)($body['createdBy'] ?? ''),
+            'userName' => (string)($body['createdByName'] ?? 'Система'),
+            'timestamp' => gmdate('c'),
+        ]];
+        $stmt = $pdo->prepare(
+            'INSERT INTO director_tasks (id, title, description, assigned_to_user_ids, department, priority, start_date, due_date, status, progress, attachments, notes, activity_log, created_by)
+             VALUES (:id, :title, :description, :assigned_to_user_ids, :department, :priority, :start_date, :due_date, :status, :progress, :attachments, :notes, :activity_log, :created_by)'
+        );
+        $stmt->execute([
+            'id' => $id,
+            'title' => $title,
+            'description' => (string)($body['description'] ?? ''),
+            'assigned_to_user_ids' => json_encode(is_array($body['assignedToUserIds'] ?? null) ? $body['assignedToUserIds'] : []),
+            'department' => (string)($body['department'] ?? ''),
+            'priority' => in_array((string)($body['priority'] ?? ''), ['High','Medium','Low'], true) ? (string)($body['priority']) : 'Medium',
+            'start_date' => $startDate,
+            'due_date' => $dueDate,
+            'status' => in_array((string)($body['status'] ?? ''), ['NotStarted','InProgress','Completed','Cancelled'], true) ? (string)($body['status']) : 'NotStarted',
+            'progress' => max(0, min(100, (int)($body['progress'] ?? 0))),
+            'attachments' => json_encode(is_array($body['attachments'] ?? null) ? $body['attachments'] : []),
+            'notes' => (string)($body['notes'] ?? ''),
+            'activity_log' => json_encode(array_merge($activityLog, is_array($body['activityLog'] ?? null) ? $body['activityLog'] : [])),
+            'created_by' => (string)($body['createdBy'] ?? ''),
+        ]);
+        json_response(['success' => true, 'id' => $id], 201);
+    }
+
+    if ($method === 'PUT' && preg_match('#^/director-tasks/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $stmt = $pdo->prepare(
+            'UPDATE director_tasks SET title=:title, description=:description, assigned_to_user_ids=:assigned_to_user_ids,
+             department=:department, priority=:priority, start_date=:start_date, due_date=:due_date, status=:status,
+             progress=:progress, attachments=:attachments, notes=:notes, activity_log=:activity_log, updated_at=CURRENT_TIMESTAMP
+             WHERE id=:id'
+        );
+        $stmt->execute([
+            'title' => (string)($body['title'] ?? ''),
+            'description' => (string)($body['description'] ?? ''),
+            'assigned_to_user_ids' => json_encode(is_array($body['assignedToUserIds'] ?? null) ? $body['assignedToUserIds'] : []),
+            'department' => (string)($body['department'] ?? ''),
+            'priority' => in_array((string)($body['priority'] ?? ''), ['High','Medium','Low'], true) ? (string)($body['priority']) : 'Medium',
+            'start_date' => (string)($body['startDate'] ?? ''),
+            'due_date' => (string)($body['dueDate'] ?? ''),
+            'status' => in_array((string)($body['status'] ?? ''), ['NotStarted','InProgress','Completed','Cancelled'], true) ? (string)($body['status']) : 'NotStarted',
+            'progress' => max(0, min(100, (int)($body['progress'] ?? 0))),
+            'attachments' => json_encode(is_array($body['attachments'] ?? null) ? $body['attachments'] : []),
+            'notes' => (string)($body['notes'] ?? ''),
+            'activity_log' => json_encode(is_array($body['activityLog'] ?? null) ? $body['activityLog'] : []),
+            'id' => $id,
+        ]);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'PATCH' && preg_match('#^/director-tasks/([^/]+)/progress$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $progress = max(0, min(100, (int)($body['progress'] ?? 0)));
+        $comment = (string)($body['comment'] ?? '');
+        $status = (string)($body['status'] ?? '');
+        $userName = (string)($body['userName'] ?? '');
+        $userId = (string)($body['userId'] ?? '');
+
+        $row = $pdo->prepare('SELECT activity_log, status FROM director_tasks WHERE id = :id');
+        $row->execute(['id' => $id]);
+        $existing = $row->fetch();
+        if (!$existing) json_response(['message' => 'Олдсонгүй.'], 404);
+
+        $log = json_field($existing['activity_log']);
+        $logEntry = [
+            'id' => bin2hex(random_bytes(5)),
+            'type' => 'progress',
+            'description' => "Явц {$progress}% болсон" . ($comment ? ": {$comment}" : ''),
+            'userId' => $userId,
+            'userName' => $userName,
+            'timestamp' => gmdate('c'),
+            'data' => ['progress' => $progress, 'comment' => $comment],
+        ];
+        $log[] = $logEntry;
+
+        $newStatus = in_array($status, ['NotStarted','InProgress','Completed','Cancelled'], true) ? $status : $existing['status'];
+
+        $stmt = $pdo->prepare('UPDATE director_tasks SET progress=:progress, status=:status, activity_log=:activity_log, updated_at=CURRENT_TIMESTAMP WHERE id=:id');
+        $stmt->execute(['progress' => $progress, 'status' => $newStatus, 'activity_log' => json_encode($log), 'id' => $id]);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'PATCH' && preg_match('#^/director-tasks/([^/]+)/comment$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $comment = trim((string)($body['comment'] ?? ''));
+        $userName = (string)($body['userName'] ?? '');
+        $userId = (string)($body['userId'] ?? '');
+
+        if ($comment === '') json_response(['message' => 'Сэтгэгдэл хоосон байна.'], 400);
+
+        $row = $pdo->prepare('SELECT activity_log FROM director_tasks WHERE id = :id');
+        $row->execute(['id' => $id]);
+        $existing = $row->fetch();
+        if (!$existing) json_response(['message' => 'Олдсонгүй.'], 404);
+
+        $log = json_field($existing['activity_log']);
+        $log[] = [
+            'id' => bin2hex(random_bytes(5)),
+            'type' => 'comment',
+            'description' => $comment,
+            'userId' => $userId,
+            'userName' => $userName,
+            'timestamp' => gmdate('c'),
+        ];
+
+        $stmt = $pdo->prepare('UPDATE director_tasks SET activity_log=:activity_log, updated_at=CURRENT_TIMESTAMP WHERE id=:id');
+        $stmt->execute(['activity_log' => json_encode($log), 'id' => $id]);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/director-tasks/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $stmt = $pdo->prepare('DELETE FROM director_tasks WHERE id = :id');
         $stmt->execute(['id' => $id]);
         json_response(['success' => true]);
     }

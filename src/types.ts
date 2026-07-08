@@ -80,6 +80,38 @@ export interface ProcurementPlan {
   visibleToUserIds?: string[];
 }
 
+export type DirectorTaskStatus = 'NotStarted' | 'InProgress' | 'Completed' | 'Cancelled';
+export type DirectorTaskPriority = 'High' | 'Medium' | 'Low';
+
+export interface DirectorTaskActivity {
+  id: string;
+  type: 'created' | 'assigned' | 'updated' | 'progress' | 'comment' | 'attachment' | 'status';
+  description: string;
+  userId: string;
+  userName: string;
+  timestamp: string;
+  data?: Record<string, any>;
+}
+
+export interface DirectorTask {
+  id: string;
+  title: string;
+  description: string;
+  assignedToUserIds: string[];
+  department: string;
+  priority: DirectorTaskPriority;
+  startDate: string;
+  dueDate: string;
+  status: DirectorTaskStatus;
+  progress: number;
+  attachments: EventAttachment[];
+  notes: string;
+  activityLog: DirectorTaskActivity[];
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+}
+
 export type Language = 'EN' | 'MN';
 export type Theme = 'light' | 'dark';
 
