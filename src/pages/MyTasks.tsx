@@ -4,6 +4,8 @@ import { translations } from '../utils/translations';
 import { cn } from '../lib/utils';
 import { Task, TaskStatus } from '../types';
 import { Modal } from '../components/ui/Modal';
+import { stripHtml } from '../components/ui/RichTextEditor';
+import { sanitizeHtml } from '../utils/sanitize';
 import { Circle, Clock, CheckCircle2, Printer, CalendarDays, FolderOpen, Paperclip, Download, Eye } from 'lucide-react';
 
 const getTaskStatusColor = (status: TaskStatus) => {
@@ -45,6 +47,13 @@ export const MyTasks: React.FC = () => {
 
   const getProjectTitle = (projectId: string) =>
     projects.find(p => p.id === projectId)?.title || projectId;
+
+  // Даалгаврын эх сурвалж: төсөл эсвэл хурлаас өгсөн бол хурлын нэр
+  const getTaskSource = (task: Task) => {
+    if (task.sourceLabel) return task.sourceLabel;
+    if (task.projectId) return getProjectTitle(task.projectId);
+    return language === 'MN' ? 'Хурлаас' : 'From meeting';
+  };
 
   const handleCycleStatus = async (taskId: string, currentStatus: TaskStatus) => {
     const cycle: TaskStatus[] = ['Pending', 'InProgress', 'Completed'];
@@ -119,8 +128,8 @@ export const MyTasks: React.FC = () => {
                   <tr key={task.id} className={cn("hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors", task.status === 'Completed' && 'opacity-60')}>
                     <td className="px-6 py-4">
                       <div className="font-semibold text-slate-900 dark:text-slate-100">{task.title}</div>
-                      {task.description && (
-                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{task.description}</div>
+                      {stripHtml(task.description) && (
+                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{stripHtml(task.description)}</div>
                       )}
                       {(task.attachments?.length ?? 0) > 0 && (
                         <span className="inline-flex items-center gap-1 mt-1 text-xs text-slate-400">
@@ -129,7 +138,10 @@ export const MyTasks: React.FC = () => {
                       )}
                     </td>
                     <td className="px-6 py-4 text-slate-500 dark:text-slate-400 hidden md:table-cell">
-                      {getProjectTitle(task.projectId)}
+                      {getTaskSource(task)}
+                      {task.assignedByName && (
+                        <div className="text-[11px] text-slate-400">{language === 'MN' ? 'Өгсөн: ' : 'By: '}{task.assignedByName}</div>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <span className={cn("text-sm font-medium", isOverdue ? 'text-rose-600 dark:text-rose-400 font-bold' : 'text-slate-600 dark:text-slate-400')}>
@@ -177,8 +189,11 @@ export const MyTasks: React.FC = () => {
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">{language === 'MN' ? 'Төсөл' : 'Project'}</p>
-                <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{getProjectTitle(selectedTask.projectId)}</p>
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">{language === 'MN' ? 'Эх сурвалж' : 'Source'}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{getTaskSource(selectedTask)}</p>
+                {selectedTask.assignedByName && (
+                  <p className="text-[11px] text-slate-400 mt-0.5">{language === 'MN' ? 'Өгсөн: ' : 'By: '}{selectedTask.assignedByName}</p>
+                )}
               </div>
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
                 <p className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">{t.dueDate}</p>
@@ -197,9 +212,16 @@ export const MyTasks: React.FC = () => {
 
             <div className="space-y-2">
               <h4 className="text-sm font-bold text-slate-500 dark:text-slate-400">{t.description}</h4>
-              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap min-h-24">
-                {selectedTask.description || (language === 'MN' ? 'Тайлбар оруулаагүй' : 'No description')}
-              </div>
+              {stripHtml(selectedTask.description) ? (
+                <div
+                  className="rich-editor-content p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap min-h-24"
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedTask.description) }}
+                />
+              ) : (
+                <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-sm text-slate-400 min-h-24">
+                  {language === 'MN' ? 'Тайлбар оруулаагүй' : 'No description'}
+                </div>
+              )}
             </div>
 
             <div className="space-y-3">

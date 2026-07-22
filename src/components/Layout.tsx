@@ -22,16 +22,25 @@ import {
   Lock,
   UserCircle,
   ClipboardList,
-  ListChecks
+  ListChecks,
+  ShoppingCart,
+  NotebookPen,
+  Radio,
+  Palmtree,
+  MessageSquare
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
 import { cn } from '../lib/utils';
 import { Department } from '../types';
+import { formatDuration, useElapsed } from '../utils/duration';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { language, setLanguage, theme, setTheme, user, profile, loginWithEmail, register, logout, isAuthReady, updateProfilePicture, tasks } = useAppContext();
-  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+  const { language, setLanguage, theme, setTheme, user, profile, loginWithEmail, register, logout, isAuthReady, updateProfilePicture, tasks, meetingSignal, endMeetingSignal, canAccessProcurement, unreadMessageCount } = useAppContext();
+  const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
+  const [dismissedSignalId, setDismissedSignalId] = useState<number | null>(null);
+  // Хурал эхэлснээс хойш өнгөрсөн хугацаа (секунд тутам шинэчлэгдэнэ)
+  const meetingElapsed = useElapsed(meetingSignal?.startedAt);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -157,7 +166,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     { icon: LayoutDashboard, label: t.dashboard, path: '/' },
     { icon: CalendarIcon, label: t.calendar, path: '/calendar' },
     { icon: Briefcase, label: t.projects, path: '/projects' },
-    { icon: ListChecks, label: language === 'MN' ? 'Захирлын үүрэг' : "Director's Tasks", path: '/director-tasks' },
+    // Худалдан авалтыг зөвхөн эрхтэй ажилтанд харуулна
+    ...(canAccessProcurement
+      ? [{ icon: ShoppingCart, label: language === 'MN' ? 'Худалдан авах ажиллагааны төлөвлөгөө' : 'Procurement Plan', path: '/procurement' }]
+      : []),
+    { icon: NotebookPen, label: language === 'MN' ? 'Хурал' : 'Meeting Minutes', path: '/meeting-minutes' },
+    { icon: MessageSquare, label: language === 'MN' ? 'Зурвас' : 'Messages', path: '/messages', badge: unreadMessageCount },
+    { icon: Palmtree, label: language === 'MN' ? 'Ээлжийн амралт' : 'Annual Leave', path: '/leave' },
   ];
 
   if (profile?.role !== 'admin') {
@@ -361,9 +376,18 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {/* Mobile backdrop — tap to close the menu */}
+      {isSidebarOpen && (
+        <div
+          onClick={() => setIsSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] lg:hidden"
+          aria-hidden="true"
+        />
+      )}
+
       {/* Sidebar */}
       <aside className={cn(
-        "fixed inset-y-0 left-0 z-40 w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-transform duration-300 lg:relative lg:translate-x-0",
+        "fixed inset-y-0 left-0 z-50 w-64 max-w-[80vw] bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-transform duration-300 lg:relative lg:z-auto lg:translate-x-0",
         !isSidebarOpen && "-translate-x-full"
       )}>
         <div className="flex flex-col h-full">
@@ -372,13 +396,21 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               <Leaf className="w-6 h-6" />
             </div>
             <span className="text-xl font-bold tracking-tight">CCRCC CALENDAR</span>
+            <button
+              onClick={() => setIsSidebarOpen(false)}
+              className="ml-auto p-1.5 lg:hidden hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+              aria-label={language === 'MN' ? 'Хаах' : 'Close'}
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
 
-          <nav className="flex-1 px-4 space-y-1 mt-4">
+          <nav className="flex-1 px-4 space-y-1 mt-4 overflow-y-auto">
             {navItems.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}
+                onClick={() => setIsSidebarOpen(false)}
                 className={({ isActive }) => cn(
                   "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200",
                   isActive 
@@ -434,9 +466,55 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Live meeting alert — flashes for every user until an admin/starter ends it */}
+        {meetingSignal && meetingSignal.id !== dismissedSignalId && (
+          <div className="bg-red-600 text-white animate-pulse">
+            <div className="flex items-center gap-3 px-4 sm:px-6 py-2.5">
+              <span className="relative flex h-3 w-3 flex-shrink-0">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-white opacity-75 animate-ping" />
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-white" />
+              </span>
+              <Radio className="w-5 h-5 flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold truncate">
+                  {language === 'MN' ? 'Хурал эхэллээ' : 'Meeting started'}: {meetingSignal.title}
+                  {meetingSignal.time ? ` · ${meetingSignal.time}` : ''}
+                </p>
+                <p className="text-[11px] text-red-100 truncate">
+                  {language === 'MN' ? 'Үргэлжилж буй' : 'Elapsed'}: {formatDuration(meetingElapsed, language === 'MN')}
+                  {meetingSignal.startedByName && (
+                    <> · {language === 'MN' ? 'Эхлүүлсэн' : 'Started by'}: {meetingSignal.startedByName}</>
+                  )}
+                </p>
+              </div>
+              {(profile?.role === 'admin' || meetingSignal.startedBy === profile?.uid) && (
+                <button
+                  onClick={async () => {
+                    try {
+                      await endMeetingSignal();
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-bold transition-colors"
+                >
+                  {language === 'MN' ? 'Дуусгах' : 'End'}
+                </button>
+              )}
+              <button
+                onClick={() => setDismissedSignalId(meetingSignal.id)}
+                className="flex-shrink-0 p-1.5 rounded-lg hover:bg-white/20 transition-colors"
+                aria-label={language === 'MN' ? 'Хаах' : 'Dismiss'}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Navbar */}
-        <header className="h-16 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 sticky top-0 z-30">
-          <div className="flex items-center gap-4">
+        <header className="h-16 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             <button 
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
               className="p-2 lg:hidden hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
@@ -482,7 +560,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-6 bg-slate-50/50 dark:bg-slate-950/50">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-50/50 dark:bg-slate-950/50">
           {children}
         </main>
       </div>

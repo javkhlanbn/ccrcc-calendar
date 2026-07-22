@@ -14,6 +14,9 @@ import { motion } from 'motion/react';
 import { format, parseISO, startOfDay, compareAsc, isValid, startOfMonth, endOfMonth, getDate, isSameDay } from 'date-fns';
 import { cn } from '../lib/utils';
 import { UserProfile } from '../types';
+import { computeLeaveBalance } from '../utils/leave';
+import { Link } from 'react-router-dom';
+import { Palmtree } from 'lucide-react';
 
 interface Activity {
   id: string;
@@ -25,7 +28,7 @@ interface Activity {
 }
 
 export const Dashboard: React.FC = () => {
-  const { projects, events, language } = useAppContext();
+  const { projects, events, language, leaveRequests, leaveEntitlementFor, leaveYear, profile } = useAppContext();
   const [activities, setActivities] = useState<Activity[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [now, setNow] = useState(new Date());
@@ -101,6 +104,12 @@ export const Dashboard: React.FC = () => {
     });
   };
 
+  // Ээлжийн амралтын үлдэгдэл (нэвтэрсэн ажилтны)
+  const leaveBalance = useMemo(
+    () => computeLeaveBalance(leaveRequests, profile?.uid || '', leaveYear, leaveEntitlementFor(profile?.uid || '')),
+    [leaveRequests, profile?.uid, leaveYear, leaveEntitlementFor]
+  );
+
   const stats = [
     { label: t.totalProjects, value: projects.length, icon: Briefcase, color: 'text-blue-500', bg: 'bg-blue-500/10' },
     { label: t.upcomingEvents, value: upcomingEvents.length, icon: CalendarIcon, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
@@ -174,6 +183,52 @@ export const Dashboard: React.FC = () => {
         ))}
       </div>
 
+      {/* Ээлжийн амралт */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+            <Palmtree className="w-5 h-5 text-primary" />
+            {language === 'MN' ? 'Ээлжийн амралт' : 'Annual Leave'}
+            <span className="text-xs font-semibold text-slate-400">({leaveYear})</span>
+          </h2>
+          <Link to="/leave" className="text-primary text-sm font-semibold flex items-center gap-1 hover:underline">
+            {language === 'MN' ? 'Дэлгэрэнгүй' : 'Details'} <ArrowRight className="w-4 h-4" />
+          </Link>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="p-3 rounded-xl bg-blue-500/10">
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              {language === 'MN' ? 'Нийт эрхтэй' : 'Entitlement'}
+            </p>
+            <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{leaveBalance.entitlement}</p>
+            <p className="text-[11px] text-slate-400">{language === 'MN' ? 'ажлын өдөр' : 'working days'}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-amber-500/10">
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              {language === 'MN' ? 'Ашигласан' : 'Used'}
+            </p>
+            <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{leaveBalance.used}</p>
+            <p className="text-[11px] text-slate-400">{language === 'MN' ? 'ажлын өдөр' : 'working days'}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-emerald-500/10">
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              {language === 'MN' ? 'Үлдсэн' : 'Remaining'}
+            </p>
+            <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{leaveBalance.remaining}</p>
+            <p className="text-[11px] text-slate-400">{language === 'MN' ? 'ажлын өдөр' : 'working days'}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-violet-500/10">
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              {language === 'MN' ? 'Ашигласан удаа' : 'Times used'}
+            </p>
+            <p className="text-2xl font-bold text-violet-600 dark:text-violet-400">
+              {leaveBalance.usageCount}/{leaveBalance.maxSplits}
+            </p>
+            <p className="text-[11px] text-slate-400">{language === 'MN' ? 'хэсэг' : 'parts'}</p>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Upcoming Events */}
         <div className="lg:col-span-2 space-y-6">
@@ -202,10 +257,26 @@ export const Dashboard: React.FC = () => {
                       </div>
                       <div>
                         <h3 className="font-bold text-slate-900 dark:text-slate-100 group-hover:text-primary transition-colors">{getEventDisplayTitle(event.id)}</h3>
+                        {event.time && (
+                          <p className="text-xs font-bold text-red-600 dark:text-red-400 flex items-center gap-1 mt-0.5">
+                            <Clock className="w-3.5 h-3.5" />
+                            {format(parseISO(event.date), 'yyyy.MM.dd')} • {event.time}
+                          </p>
+                        )}
                         <p className="text-sm text-slate-500 dark:text-slate-400 line-clamp-1">{event.description}</p>
                         <div className="flex gap-2 mt-2">
-                          <Badge variant={event.category === 'Project' ? 'primary' : event.category === 'Environmental' ? 'success' : 'secondary'}>
-                            {t[event.category.toLowerCase() as keyof typeof t.EN]}
+                          <Badge variant={
+                            event.category === 'Project' ? 'primary'
+                              : event.category === 'Environmental' ? 'success'
+                              : event.category === 'Meeting' ? 'error'
+                              : event.category === 'Report' ? 'warning'
+                              : 'secondary'
+                          }>
+                            {event.category === 'Meeting'
+                              ? (language === 'MN' ? 'Шуурхай хурал' : 'Urgent Meeting')
+                              : event.category === 'Report'
+                                ? (language === 'MN' ? 'Тайлан мэдээ' : 'Report')
+                                : t[event.category.toLowerCase() as keyof typeof t.EN]}
                           </Badge>
                           {event.tags.map(tag => (
                             <Badge key={tag} variant="outline" className="opacity-70">
@@ -294,7 +365,9 @@ export const Dashboard: React.FC = () => {
                   currentMonthEvents.map((event) => (
                     <div key={event.id} className="text-xs text-slate-700 dark:text-slate-300 flex items-center justify-between gap-2">
                       <span className="truncate">{getEventDisplayTitle(event.id)}</span>
-                      <span className="text-slate-500 dark:text-slate-400 flex-shrink-0">{format(parseISO(event.date), 'MM/dd')}</span>
+                      <span className="text-slate-500 dark:text-slate-400 flex-shrink-0">
+                        {format(parseISO(event.date), 'MM/dd')}{event.time ? ` ${event.time}` : ''}
+                      </span>
                     </div>
                   ))
                 ) : (

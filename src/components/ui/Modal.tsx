@@ -9,9 +9,11 @@ interface ModalProps {
   title: string;
   children: React.ReactNode;
   className?: string;
+  /** false үед гадна талд дарахад хаагдахгүй (бөглөж байгаа мэдээлэл алдагдахаас сэргийлнэ) */
+  closeOnBackdropClick?: boolean;
 }
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, className }) => {
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, className, closeOnBackdropClick = true }) => {
   return (
     <AnimatePresence>
       {isOpen && (
@@ -20,7 +22,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={onClose}
+            onClick={closeOnBackdropClick ? onClose : undefined}
             className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50"
           />
           <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none p-4">
@@ -29,11 +31,11 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className={cn(
-                "bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-lg pointer-events-auto overflow-hidden border border-slate-200 dark:border-slate-800",
+                "bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-lg pointer-events-auto overflow-hidden border border-slate-200 dark:border-slate-800 flex flex-col max-h-[92vh]",
                 className
               )}
             >
-              <div className="flex items-center justify-between p-6 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center justify-between p-6 border-b border-slate-100 dark:border-slate-800 flex-shrink-0">
                 <h3 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
                 <button
                   onClick={onClose}
@@ -42,7 +44,7 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              <div className="p-6">
+              <div className="p-6 overflow-y-auto flex-1">
                 {children}
               </div>
             </motion.div>

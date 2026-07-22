@@ -14,8 +14,6 @@ import {
   Circle,
   Paperclip,
   X,
-  Briefcase,
-  ShoppingCart,
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
@@ -24,14 +22,12 @@ import { Modal } from '../components/ui/Modal';
 import { Project, ProjectStatus, EnvironmentalTag, UserProfile, Task, TaskStatus, EventAttachment } from '../types';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
-import { ProcurementPlan } from './ProcurementPlan';
 
 export const Projects: React.FC = () => {
   const { projects, tasks, language, addProject, updateProject, deleteProject, addTask, updateTask, deleteTask, updateTaskStatus, profile } = useAppContext();
   const t = translations[language];
   const canManageProjects = profile?.role === 'admin';
-  const [view, setView] = useState<'table' | 'kanban'>('kanban');
-  const [mainView, setMainView] = useState<'projects' | 'procurement'>('projects');
+  const [view, setView] = useState<'table' | 'kanban'>('table');
 
   // Project modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -58,8 +54,6 @@ export const Projects: React.FC = () => {
   // Print ref
   const printRef = useRef<HTMLDivElement>(null);
 
-  // Project plan view state
-  const [showProjectPlan, setShowProjectPlan] = useState(false);
 
   const departments = [
     { key: 'Захиргаа, санхүүгийн хэлтэс', label: 'Захиргаа' },
@@ -191,34 +185,6 @@ export const Projects: React.FC = () => {
       reader.onerror = () => reject(new Error('File унших үед алдаа гарлаа'));
       reader.readAsDataURL(file);
     });
-
-  // ---- Project Plan helpers ----
-  const getYearsFromProjects = () => {
-    const years = new Set<number>();
-    projects.forEach(project => {
-      const startYear = new Date(project.startDate).getFullYear();
-      const endYear = new Date(project.endDate).getFullYear();
-      for (let y = startYear; y <= endYear; y++) {
-        years.add(y);
-      }
-    });
-    return Array.from(years).sort((a, b) => a - b);
-  };
-
-  const getQuarterFromDate = (date: Date): number => {
-    const month = date.getMonth();
-    return Math.floor(month / 3) + 1;
-  };
-
-  const isProjectActiveInQuarter = (project: Project, year: number, quarter: number): boolean => {
-    const startDate = new Date(project.startDate);
-    const endDate = new Date(project.endDate);
-    
-    const quarterStart = new Date(year, (quarter - 1) * 3, 1);
-    const quarterEnd = new Date(year, quarter * 3, 0);
-    
-    return startDate <= quarterEnd && endDate >= quarterStart;
-  };
 
   const handleTaskAttachmentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
@@ -402,34 +368,6 @@ export const Projects: React.FC = () => {
 
   return (
     <div className="space-y-8">
-      {/* ---- Module switcher: Projects vs Procurement plan ---- */}
-      <div className="flex bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-1 w-fit print:hidden">
-        <button
-          onClick={() => setMainView('projects')}
-          className={cn(
-            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all",
-            mainView === 'projects' ? "bg-slate-100 dark:bg-slate-800 text-primary" : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-          )}
-        >
-          <Briefcase className="w-4 h-4" />
-          {t.projects}
-        </button>
-        <button
-          onClick={() => setMainView('procurement')}
-          className={cn(
-            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all",
-            mainView === 'procurement' ? "bg-slate-100 dark:bg-slate-800 text-primary" : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-          )}
-        >
-          <ShoppingCart className="w-4 h-4" />
-          {language === 'MN' ? 'Худалдан авах ажиллагааны төлөвлөгөө' : 'Procurement Plan'}
-        </button>
-      </div>
-
-      {mainView === 'procurement' ? (
-        <ProcurementPlan />
-      ) : (
-      <>
       {/* ---- Header ---- */}
       <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -521,67 +459,38 @@ export const Projects: React.FC = () => {
       {/* ---- Tasks Section ---- */}
       <section>
         <div className="flex items-center justify-between mb-4 print:hidden">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <ClipboardList className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">
-                {showProjectPlan ? (language === 'MN' ? 'Төслийн төлөвлөгөө' : 'Project Plan') : t.tasks}
-              </h2>
-              <span className="bg-slate-200 dark:bg-slate-800 text-slate-500 text-xs font-bold px-2 py-0.5 rounded-full">
-                {showProjectPlan ? projects.length : myTasks.length}
-              </span>
-            </div>
-            <div className="flex bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 p-1">
-              <button
-                onClick={() => setShowProjectPlan(false)}
-                className={cn(
-                  "px-3 py-1 rounded text-sm font-bold transition-all",
-                  !showProjectPlan ? "bg-slate-100 dark:bg-slate-800 text-primary" : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                )}
-              >
-                {t.tasks}
-              </button>
-              <button
-                onClick={() => setShowProjectPlan(true)}
-                className={cn(
-                  "px-3 py-1 rounded text-sm font-bold transition-all",
-                  showProjectPlan ? "bg-slate-100 dark:bg-slate-800 text-primary" : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                )}
-              >
-                {language === 'MN' ? 'Төлөвлөгөө' : 'Plan'}
-              </button>
-            </div>
+          <div className="flex items-center gap-2">
+            <ClipboardList className="w-5 h-5 text-primary" />
+            <h2 className="text-xl font-bold text-slate-900 dark:text-slate-50">{t.tasks}</h2>
+            <span className="bg-slate-200 dark:bg-slate-800 text-slate-500 text-xs font-bold px-2 py-0.5 rounded-full">
+              {myTasks.length}
+            </span>
           </div>
           <div className="flex items-center gap-2">
-            {!showProjectPlan && (
-              <>
-                <button
-                  onClick={handlePrint}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 font-bold text-sm hover:bg-slate-50 transition-colors"
-                >
-                  <Printer className="w-4 h-4" />
-                  {t.printReport}
-                </button>
-                {canManageProjects && (
-                  <button onClick={() => handleCreateTask()} className="btn-primary flex items-center gap-2">
-                    <Plus className="w-4 h-4" />
-                    {t.addTask}
-                  </button>
-                )}
-              </>
+            <button
+              onClick={handlePrint}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 font-bold text-sm hover:bg-slate-50 transition-colors"
+            >
+              <Printer className="w-4 h-4" />
+              {t.printReport}
+            </button>
+            {canManageProjects && (
+              <button onClick={() => handleCreateTask()} className="btn-primary flex items-center gap-2">
+                <Plus className="w-4 h-4" />
+                {t.addTask}
+              </button>
             )}
           </div>
         </div>
 
         {/* Print header (only visible when printing) */}
         <div className="hidden print:block mb-6">
-          <h1 className="text-2xl font-bold">{showProjectPlan ? (language === 'MN' ? 'Төслийн төлөвлөгөө' : 'Project Plan') : t.taskReport}</h1>
+          <h1 className="text-2xl font-bold">{t.taskReport}</h1>
           <p className="text-sm text-slate-500">{new Date().toLocaleDateString(language === 'MN' ? 'mn-MN' : 'en-US')}</p>
         </div>
 
-        {!showProjectPlan ? (
-          // ---- Tasks Table ----
-          <div ref={printRef} className="card p-0 overflow-hidden">
+        {/* ---- Tasks Table ---- */}
+        <div ref={printRef} className="card p-0 overflow-hidden">
             {myTasks.length === 0 ? (
               <div className="py-16 flex flex-col items-center gap-2 text-slate-400 print:hidden">
                 <ClipboardList className="w-10 h-10 opacity-30" />
@@ -651,77 +560,6 @@ export const Projects: React.FC = () => {
               </table>
             )}
           </div>
-        ) : (
-          // ---- Project Plan Table ----
-          <div className="card p-0 overflow-x-auto">
-            {projects.length === 0 ? (
-              <div className="py-16 flex flex-col items-center gap-2 text-slate-400">
-                <ClipboardList className="w-10 h-10 opacity-30" />
-                <p className="text-sm">{language === 'MN' ? 'Төсөл байхгүй байна' : 'No projects'}</p>
-              </div>
-            ) : (
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800">
-                    <th className="px-6 py-4 text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider min-w-[250px]">
-                      {t.project}
-                    </th>
-                    {getYearsFromProjects().map(year => (
-                      <th key={year} colSpan={4} className="px-3 py-4 text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider text-center border-l border-slate-200 dark:border-slate-800">
-                        {year}
-                      </th>
-                    ))}
-                  </tr>
-                  <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800">
-                    <th className="px-6 py-2"></th>
-                    {getYearsFromProjects().map(year => (
-                      <React.Fragment key={`quarters-${year}`}>
-                        {[1, 2, 3, 4].map(q => (
-                          <th
-                            key={`${year}-Q${q}`}
-                            className="px-2 py-2 text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider text-center border-l border-slate-200 dark:border-slate-800"
-                          >
-                            Q{q}
-                          </th>
-                        ))}
-                      </React.Fragment>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {projects.map(project => (
-                    <tr
-                      key={project.id}
-                      className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
-                      onClick={() => canManageProjects && handleEdit(project)}
-                    >
-                      <td className="px-6 py-4 sticky left-0 z-10 bg-white dark:bg-slate-950">
-                        <div className="font-semibold text-slate-900 dark:text-slate-100">{project.title}</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{project.description}</div>
-                      </td>
-                      {getYearsFromProjects().map(year => (
-                        <React.Fragment key={`row-${project.id}-${year}`}>
-                          {[1, 2, 3, 4].map(quarter => (
-                            <td
-                              key={`${project.id}-${year}-Q${quarter}`}
-                              className="px-2 py-4 text-center border-l border-slate-200 dark:border-slate-800"
-                            >
-                              {isProjectActiveInQuarter(project, year, quarter) && (
-                                <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary text-white text-xs font-bold">
-                                  ✓
-                                </span>
-                              )}
-                            </td>
-                          ))}
-                        </React.Fragment>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
       </section>
 
       {/* ---- Project Modal ---- */}
@@ -955,8 +793,6 @@ export const Projects: React.FC = () => {
           </div>
         </div>
       </Modal>
-      </>
-      )}
     </div>
   );
 };

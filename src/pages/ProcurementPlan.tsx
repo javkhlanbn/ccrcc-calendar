@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, ShoppingCart, Printer, MoreVertical, Search, Columns3, Check, FileSpreadsheet } from 'lucide-react';
+import { Plus, ShoppingCart, Printer, MoreVertical, Search, Columns3, Check, FileSpreadsheet, Lock } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useAppContext } from '../context/AppContext';
 import { ProcurementPlan as ProcurementPlanType, UserProfile } from '../types';
 import { Modal } from '../components/ui/Modal';
 import { cn } from '../lib/utils';
 
-type ColKey = keyof Omit<ProcurementPlanType, 'id' | 'visibleToUserIds'>;
+type ColKey = keyof Omit<ProcurementPlanType, 'id' | 'visibleToUserIds' | 'editableByUserIds'>;
 
 interface ColumnDef {
   key: ColKey;
@@ -157,6 +157,7 @@ const emptyPlan = (): Partial<ProcurementPlanType> => ({
   variance: '',
   extraNotes: '',
   visibleToUserIds: [],
+  editableByUserIds: [],
 });
 
 export const ProcurementPlan: React.FC = () => {
@@ -168,9 +169,12 @@ export const ProcurementPlan: React.FC = () => {
     addProcurementPlan,
     updateProcurementPlan,
     deleteProcurementPlan,
+    canEditProcurement,
+    canAccessProcurement,
   } = useAppContext();
   const isMN = language === 'MN';
-  const canManage = profile?.role === 'admin';
+  // canManage = шинэ бичлэг үүсгэх эрх. Мөр тус бүрийн засах эрхийг canEditProcurement(plan) шийднэ.
+  const canManage = canEditProcurement();
   const t = (mn: string, en: string) => (isMN ? mn : en);
   const buildDuration = (amount: string, unit: DurationUnit) => {
     const a = String(amount).trim();
@@ -219,6 +223,7 @@ export const ProcurementPlan: React.FC = () => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [selected, setSelected] = useState<ProcurementPlanType | null>(null);
   const [isVisibleUsersOpen, setIsVisibleUsersOpen] = useState(false);
+  const [isEditableUsersOpen, setIsEditableUsersOpen] = useState(false);
   const [formData, setFormData] = useState<Partial<ProcurementPlanType>>(emptyPlan());
 
   useEffect(() => {
@@ -232,8 +237,10 @@ export const ProcurementPlan: React.FC = () => {
         console.error('Users fetch error:', error);
       }
     };
-    if (canManage) fetchUsers();
-  }, [canManage]);
+    // Мөр тус бүрийн засах эрх олгогдсон ажилтан ч эрхийн жагсаалтыг харах шаардлагатай тул
+    // глобал 'procurement' эрхээр хязгаарлахгүй.
+    if (profile?.status === 'approved') fetchUsers();
+  }, [profile?.status]);
 
   useEffect(() => {
     try {
@@ -323,11 +330,17 @@ export const ProcurementPlan: React.FC = () => {
   };
 
   const handleEdit = (plan: ProcurementPlanType) => {
-    if (!canManage) return;
-    setFormData({ ...plan, visibleToUserIds: plan.visibleToUserIds || [] });
+    // Зөвхөн тухайн мөрийг засах эрхтэй ажилтан нээнэ
+    if (!canEditProcurement(plan)) return;
+    setFormData({
+      ...plan,
+      visibleToUserIds: plan.visibleToUserIds || [],
+      editableByUserIds: plan.editableByUserIds || [],
+    });
     setSelected(plan);
     setIsEditMode(true);
     setIsVisibleUsersOpen(false);
+    setIsEditableUsersOpen(false);
     setIsModalOpen(true);
   };
 
@@ -335,7 +348,7 @@ export const ProcurementPlan: React.FC = () => {
   const computedVarianceNum = (Number(formData.yearFinancing) || 0) - (Number(formData.contractValue) || 0);
 
   const handleSave = async () => {
-    if (!canManage) return;
+    if (!canEditProcurement(isEditMode ? (selected ?? undefined) : undefined)) return;
     if (!String(formData.name || '').trim()) {
       alert(t('Худалдан авах бараа/үйлчилгээний нэрийг оруулна уу.', 'Please enter the procurement item name.'));
       return;
@@ -359,7 +372,7 @@ export const ProcurementPlan: React.FC = () => {
   };
 
   const handleDelete = async () => {
-    if (!canManage || !selected) return;
+    if (!selected || !canEditProcurement(selected)) return;
     if (!confirm(t('Энэ мэдээллийг устгах уу?', 'Delete this record?'))) return;
     try {
       await deleteProcurementPlan(selected.id);
@@ -369,18 +382,20 @@ export const ProcurementPlan: React.FC = () => {
     }
   };
 
-  const toggleVisibleUser = (userId: string) => {
-    const sel = formData.visibleToUserIds || [];
+  type UserListField = 'visibleToUserIds' | 'editableByUserIds';
+
+  const toggleUserIn = (field: UserListField, userId: string) => {
+    const sel = formData[field] || [];
     setFormData({
       ...formData,
-      visibleToUserIds: sel.includes(userId) ? sel.filter(id => id !== userId) : [...sel, userId],
+      [field]: sel.includes(userId) ? sel.filter(id => id !== userId) : [...sel, userId],
     });
   };
 
-  const toggleAllVisibleUsers = () => {
+  const toggleAllUsersIn = (field: UserListField) => {
     const allIds = users.map(u => u.uid);
-    const isAll = allIds.length > 0 && allIds.every(id => (formData.visibleToUserIds || []).includes(id));
-    setFormData({ ...formData, visibleToUserIds: isAll ? [] : allIds });
+    const isAll = allIds.length > 0 && allIds.every(id => (formData[field] || []).includes(id));
+    setFormData({ ...formData, [field]: isAll ? [] : allIds });
   };
 
   const toggleColumn = (key: ColKey) => {
@@ -482,6 +497,24 @@ export const ProcurementPlan: React.FC = () => {
     if (c.wide) return 'min-w-[170px] max-w-[230px]';
     return 'min-w-[100px] max-w-[150px]';
   };
+
+  // Эрхгүй ажилтан шууд URL-ээр орж ирвэл хуудсын агуулга огт харагдахгүй
+  if (!canAccessProcurement) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] text-center">
+        <Lock className="w-16 h-16 text-slate-400 mb-4 opacity-20" />
+        <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+          {t('Хандах эрхгүй', 'No access')}
+        </h2>
+        <p className="text-slate-500 dark:text-slate-400 mt-2 max-w-md">
+          {t(
+            'Танд энэ хуудсыг үзэх эрх байхгүй байна. Хэрэв шаардлагатай бол админд хандана уу.',
+            'You do not have permission to view this page. Please contact an admin if you need access.'
+          )}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <section className="space-y-6">
@@ -649,8 +682,11 @@ export const ProcurementPlan: React.FC = () => {
                   <th
                     key={c.key}
                     className={cn(
-                      'sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 px-2 py-2 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase border-b border-slate-200 dark:border-slate-700 shadow-sm align-bottom whitespace-normal break-words leading-tight',
+                      'sticky top-0 bg-slate-100 dark:bg-slate-800 px-2 py-2 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase border-b border-slate-200 dark:border-slate-700 shadow-sm align-bottom whitespace-normal break-words leading-tight',
                       c.right ? 'text-right' : 'text-left',
+                      c.key === 'name'
+                        ? 'left-0 z-30 border-r border-slate-200 dark:border-slate-700'
+                        : 'z-20',
                       colSize(c)
                     )}
                   >
@@ -668,8 +704,8 @@ export const ProcurementPlan: React.FC = () => {
                   key={plan.id}
                   onClick={() => handleEdit(plan)}
                   className={cn(
-                    'transition-colors align-top',
-                    canManage ? 'hover:bg-slate-50 dark:hover:bg-slate-800/30 cursor-pointer' : ''
+                    'group transition-colors align-top',
+                    canEditProcurement(plan) ? 'hover:bg-slate-50 dark:hover:bg-slate-800/30 cursor-pointer' : ''
                   )}
                 >
                   {shownColumns.map(c => (
@@ -679,7 +715,9 @@ export const ProcurementPlan: React.FC = () => {
                         'px-2 py-2 align-top text-xs',
                         c.right ? 'text-right' : '',
                         colSize(c),
-                        c.money || c.badge || c.key === 'idx' ? 'whitespace-nowrap' : 'whitespace-normal break-words'
+                        c.money || c.badge || c.key === 'idx' ? 'whitespace-nowrap' : 'whitespace-normal break-words',
+                        c.key === 'name' &&
+                          'sticky left-0 z-10 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/30 border-r border-slate-200 dark:border-slate-700'
                       )}
                     >
                       {renderCell(plan, c)}
@@ -687,15 +725,17 @@ export const ProcurementPlan: React.FC = () => {
                   ))}
                   {canManage && (
                     <td className="px-3 py-3 text-right print:hidden">
-                      <button
-                        onClick={e => {
-                          e.stopPropagation();
-                          handleEdit(plan);
-                        }}
-                        className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
-                      >
-                        <MoreVertical className="w-4 h-4 text-slate-400" />
-                      </button>
+                      {canEditProcurement(plan) && (
+                        <button
+                          onClick={e => {
+                            e.stopPropagation();
+                            handleEdit(plan);
+                          }}
+                          className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                        >
+                          <MoreVertical className="w-4 h-4 text-slate-400" />
+                        </button>
+                      )}
                     </td>
                   )}
                 </tr>
@@ -704,7 +744,16 @@ export const ProcurementPlan: React.FC = () => {
             <tfoot>
               <tr className="bg-slate-50 dark:bg-slate-800/50 border-t-2 border-slate-200 dark:border-slate-700 font-bold">
                 {shownColumns.map((c, i) => (
-                  <td key={c.key} className={cn('px-2 py-2 text-xs whitespace-nowrap', c.right ? 'text-right' : '', colSize(c))}>
+                  <td
+                    key={c.key}
+                    className={cn(
+                      'px-2 py-2 text-xs whitespace-nowrap',
+                      c.right ? 'text-right' : '',
+                      colSize(c),
+                      c.key === 'name' &&
+                        'sticky left-0 z-10 bg-slate-50 dark:bg-slate-800/50 border-r border-slate-200 dark:border-slate-700'
+                    )}
+                  >
                     {c.money ? (
                       <span className="tabular-nums text-slate-900 dark:text-slate-100">{fmt(moneyTotals[c.key] || 0)}</span>
                     ) : i === 0 ? (
@@ -905,7 +954,7 @@ export const ProcurementPlan: React.FC = () => {
                     <input
                       type="checkbox"
                       checked={users.length > 0 && users.every(u => (formData.visibleToUserIds || []).includes(u.uid))}
-                      onChange={toggleAllVisibleUsers}
+                      onChange={() => toggleAllUsersIn('visibleToUserIds')}
                     />
                     <span>{t('Бүгд', 'All')}</span>
                   </label>
@@ -914,7 +963,7 @@ export const ProcurementPlan: React.FC = () => {
                       <input
                         type="checkbox"
                         checked={(formData.visibleToUserIds || []).includes(u.uid)}
-                        onChange={() => toggleVisibleUser(u.uid)}
+                        onChange={() => toggleUserIn('visibleToUserIds', u.uid)}
                       />
                       <span>{u.displayName}</span>
                     </label>
@@ -926,6 +975,55 @@ export const ProcurementPlan: React.FC = () => {
               {t(
                 'Хэрэглэгч сонгосон тохиолдолд зөвхөн тэдгээрт харагдана. Хоосон бол бүх хэрэглэгчид харагдана.',
                 'If users are selected, only they can see this record. If empty, everyone can.'
+              )}
+            </p>
+          </div>
+
+          {/* Засах эрх */}
+          <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <label className="text-sm font-bold text-slate-500 dark:text-slate-400">
+              {t('Засах эрхтэй хэрэглэгчид', 'Users allowed to edit')}
+            </label>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsEditableUsersOpen(!isEditableUsersOpen)}
+                className="input-field w-full text-left flex items-center justify-between"
+              >
+                <span className="truncate">
+                  {(formData.editableByUserIds || []).length > 0
+                    ? users.filter(u => (formData.editableByUserIds || []).includes(u.uid)).map(u => u.displayName).join(', ')
+                    : t('Худалдан авалтын эрхтэй бүх ажилтан', 'Anyone with procurement permission')}
+                </span>
+                <span className="text-slate-400 text-xs">▼</span>
+              </button>
+              {isEditableUsersOpen && (
+                <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 shadow-lg max-h-52 overflow-y-auto space-y-2">
+                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200 pb-2 border-b border-slate-100 dark:border-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={users.length > 0 && users.every(u => (formData.editableByUserIds || []).includes(u.uid))}
+                      onChange={() => toggleAllUsersIn('editableByUserIds')}
+                    />
+                    <span>{t('Бүгд', 'All')}</span>
+                  </label>
+                  {users.map(u => (
+                    <label key={u.uid} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={(formData.editableByUserIds || []).includes(u.uid)}
+                        onChange={() => toggleUserIn('editableByUserIds', u.uid)}
+                      />
+                      <span>{u.displayName}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500">
+              {t(
+                'Ажилтан сонгосон тохиолдолд зөвхөн тэд энэ мөрийг засна (админ үргэлж засна). Сонгогдсон ажилтан үүнийг заавал харна.',
+                'If users are selected, only they can edit this row (admins always can). Selected users can always view it.'
               )}
             </p>
           </div>

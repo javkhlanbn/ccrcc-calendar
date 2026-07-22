@@ -1,5 +1,20 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Project, Event, Language, Theme, UserProfile, Department, UserStatus, Task, TaskStatus, ProcurementPlan } from '../types';
+import { Project, Event, Language, Theme, UserProfile, Department, UserStatus, UserRole, UserPermission, Task, TaskStatus, ProcurementPlan, MeetingMinutes, MeetingSignal, MeetingDuration, LeaveRequest, LeaveStatus, DEFAULT_LEAVE_DAYS, PersonalMeetingNote, MeetingRecurrence, MeetingType } from '../types';
+import { generateOccurrenceDates } from '../utils/meeting';
+
+export interface NewMeetingInput {
+  title: string;
+  description?: string;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  endTime: string;
+  recurrence: MeetingRecurrence;
+  meetingType: MeetingType;
+  location?: string;
+  attendeeUserIds: string[];
+  minutesKeeperUserId?: string;
+}
 
 interface AuthUser {
   uid: string;
@@ -30,15 +45,46 @@ interface AppContextType {
   addEvent: (event: Event) => Promise<void>;
   updateEvent: (event: Event) => Promise<void>;
   deleteEvent: (id: string) => Promise<void>;
+  canManageMeetings: boolean;
+  createMeetingSeries: (meeting: NewMeetingInput) => Promise<number>;
   addTask: (task: Task) => Promise<void>;
+  assignMeetingTask: (data: { title: string; description?: string; dueDate: string; assignedToUserIds: string[]; sourceLabel?: string }) => Promise<void>;
   updateTask: (task: Task) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
   updateTaskStatus: (id: string, status: TaskStatus) => Promise<void>;
+  canEditProcurement: (plan?: ProcurementPlan) => boolean;
+  canAccessProcurement: boolean;
   addProcurementPlan: (plan: ProcurementPlan) => Promise<void>;
   updateProcurementPlan: (plan: ProcurementPlan) => Promise<void>;
   deleteProcurementPlan: (id: string) => Promise<void>;
+  meetingMinutes: MeetingMinutes[];
+  addMeetingMinutes: (minutes: MeetingMinutes) => Promise<void>;
+  updateMeetingMinutes: (minutes: MeetingMinutes) => Promise<void>;
+  deleteMeetingMinutes: (id: string) => Promise<void>;
+  canManageMinutes: (minutes?: MeetingMinutes) => boolean;
+  personalNotes: PersonalMeetingNote[];
+  savePersonalNote: (note: Partial<PersonalMeetingNote>) => Promise<void>;
+  deletePersonalNote: (id: string) => Promise<void>;
+  leaveRequests: LeaveRequest[];
+  leaveEntitlement: number;
+  leaveYear: number;
+  leaveEntitlementFor: (userId: string) => number;
+  addLeaveRequest: (request: { startDate: string; endDate: string; reason?: string }) => Promise<void>;
+  updateLeaveStatus: (id: string, status: LeaveStatus) => Promise<void>;
+  deleteLeaveRequest: (id: string) => Promise<void>;
+  updateLeaveEntitlement: (year: number, days: number) => Promise<void>;
+  updateUserLeaveEntitlement: (userId: string, year: number, days: number | null) => Promise<void>;
+  unreadMessageCount: number;
+  refreshUnreadMessages: () => Promise<void>;
+  meetingSignal: MeetingSignal | null;
+  meetingDurations: MeetingDuration[];
+  canStartMeeting: boolean;
+  startMeetingSignal: (meeting: { meetingId?: string; title: string; time?: string }) => Promise<void>;
+  endMeetingSignal: () => Promise<void>;
   updateUserStatus: (uid: string, status: UserStatus) => Promise<void>;
-  updateManagedUser: (uid: string, updates: { firstName: string; lastName: string; department: Department; password?: string }) => Promise<UserProfile>;
+  updateManagedUser: (uid: string, updates: { email?: string; firstName: string; lastName: string; department: Department; password?: string; role?: UserRole; permissions?: UserPermission[] }) => Promise<UserProfile>;
+  createManagedUser: (data: { email: string; password: string; firstName: string; lastName: string; department: Department; role: UserRole; permissions: UserPermission[] }) => Promise<UserProfile>;
+  deleteManagedUser: (uid: string) => Promise<void>;
   updateProfilePicture: (photoDataUrl: string) => Promise<void>;
 }
 
@@ -64,8 +110,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [storedEvents, setStoredEvents] = useState<Event[]>([]);
   const [storedTasks, setStoredTasks] = useState<Task[]>([]);
   const [storedProcurementPlans, setStoredProcurementPlans] = useState<ProcurementPlan[]>([]);
+  const [storedMeetingMinutes, setStoredMeetingMinutes] = useState<MeetingMinutes[]>([]);
+  const [personalNotes, setPersonalNotes] = useState<PersonalMeetingNote[]>([]);
+  const [storedLeaveRequests, setStoredLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [leaveEntitlement, setLeaveEntitlement] = useState<number>(DEFAULT_LEAVE_DAYS);
+  // Ажилтан тус бүрийн override (userId → хоног). Байхгүй бол глобал өгөгдмөлийг хэрэглэнэ.
+  const [userLeaveEntitlements, setUserLeaveEntitlements] = useState<Record<string, number>>({});
+  const [storedMeetingSignal, setStoredMeetingSignal] = useState<MeetingSignal | null>(null);
+  const [meetingDurations, setMeetingDurations] = useState<MeetingDuration[]>([]);
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
   const [language, setLanguage] = useState<Language>('MN');
-  const [theme, setTheme] = useState<Theme>('light');
+  const [theme, setTheme] = useState<Theme>('dark');
+
+  const hasPermission = (permission: 'procurement' | 'meeting') => {
+    if (!profile || profile.status !== 'approved') return false;
+    if (profile.role === 'admin') return true;
+    return (profile.permissions || []).includes(permission);
+  };
 
   const canViewItem = (item: { visibleToUserIds?: string[] }) => {
     if (!profile) return false;
@@ -85,10 +146,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return assigned.includes(profile.uid);
   };
 
+  const canViewMinutesItem = (minutes: MeetingMinutes) => {
+    if (!profile) return false;
+    if (profile.role === 'admin') return true;
+    if ((minutes.attendeeUserIds || []).includes(profile.uid)) return true;
+    if (minutes.createdBy === profile.uid) return true;
+
+    const visibleTo = minutes.visibleToUserIds || [];
+    if (visibleTo.length === 0) return true;
+    return visibleTo.includes(profile.uid);
+  };
+
+  // Худалдан авалт: харах эрх нь visibleToUserIds-аар, засах эрх нь editableByUserIds-аар тодорхойлогдоно.
+  // Засах эрх олгогдсон ажилтан заавал харна (эс бөгөөс засах боловч харах боломжгүй болно).
+  const canViewProcurement = (plan: ProcurementPlan) => {
+    if (!profile) return false;
+    if (profile.role === 'admin') return true;
+    if ((plan.editableByUserIds || []).includes(profile.uid)) return true;
+
+    const visibleTo = plan.visibleToUserIds || [];
+    if (visibleTo.length === 0) return true;
+    return visibleTo.includes(profile.uid);
+  };
+
+  // plan байхгүй = шинээр үүсгэх эрх шалгаж байна
+  const canEditProcurement = (plan?: ProcurementPlan) => {
+    if (!profile || profile.status !== 'approved') return false;
+    if (profile.role === 'admin') return true;
+    if (!plan) return hasPermission('procurement');
+
+    const editableBy = plan.editableByUserIds || [];
+    // Тодорхой ажилтан сонгогдсон бол ЗӨВХӨН тэд засна
+    if (editableBy.length > 0) return editableBy.includes(profile.uid);
+    // Хоосон бол хуучин дүрмээр 'procurement' эрхтэй ажилтан засна
+    return hasPermission('procurement');
+  };
+
+  // Худалдан авалтын хуудас руу нэвтрэх эрх: админ, глобал 'procurement' эрхтэй,
+  // эсвэл ямар нэг мөрөнд харах/засах эрх нэрлэгдсэн ажилтан. Аль нь ч биш бол хуудас огт харагдахгүй.
+  const canAccessProcurement = !!profile && profile.status === 'approved' && (
+    profile.role === 'admin' ||
+    hasPermission('procurement') ||
+    (profile.permissions || []).includes('procurement_view') ||
+    storedProcurementPlans.some(p =>
+      (p.visibleToUserIds || []).includes(profile.uid) ||
+      (p.editableByUserIds || []).includes(profile.uid)
+    )
+  );
+
   const projects = storedProjects.filter(canViewItem);
   const events = storedEvents.filter(canViewItem);
   const tasks = storedTasks.filter(canViewTask);
-  const procurementPlans = storedProcurementPlans.filter(canViewItem);
+  const procurementPlans = storedProcurementPlans.filter(canViewProcurement);
+  const meetingMinutes = storedMeetingMinutes.filter(canViewMinutesItem);
+  // Админ бүх хүсэлтийг, ажилтан зөвхөн өөрийнхөө хүсэлтийг харна
+  const leaveRequests = storedLeaveRequests.filter(r => {
+    if (!profile) return false;
+    if (profile.role === 'admin') return true;
+    return r.userId === profile.uid;
+  });
+  const leaveYear = new Date().getFullYear();
+  // Тодорхой ажилтны эрхтэй хоног: override байвал түүнийг, эс бөгөөс глобал өгөгдмөлийг
+  const leaveEntitlementFor = (userId: string) =>
+    userLeaveEntitlements[userId] !== undefined ? userLeaveEntitlements[userId] : leaveEntitlement;
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') as Theme;
@@ -123,11 +243,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     const loadProjectsAndEvents = async () => {
       try {
-        const [projectsRes, eventsRes, tasksRes, procurementRes] = await Promise.all([
+        const currentYear = new Date().getFullYear();
+        const [projectsRes, eventsRes, tasksRes, procurementRes, minutesRes, leaveRes, leaveSettingsRes, leaveEntitlementsRes] = await Promise.all([
           fetch('/api/projects'),
           fetch('/api/events'),
           fetch('/api/tasks'),
           fetch('/api/procurement-plans'),
+          fetch('/api/meeting-minutes'),
+          fetch('/api/leave-requests'),
+          fetch(`/api/leave-settings?year=${currentYear}`),
+          fetch(`/api/leave-entitlements?year=${currentYear}`),
         ]);
 
         if (projectsRes.ok) {
@@ -149,6 +274,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const procurementData = await procurementRes.json();
           setStoredProcurementPlans(procurementData);
         }
+
+        if (minutesRes.ok) {
+          const minutesData = await minutesRes.json();
+          setStoredMeetingMinutes(minutesData);
+        }
+
+        if (leaveRes.ok) {
+          const leaveData = await leaveRes.json();
+          setStoredLeaveRequests(leaveData);
+        }
+
+        if (leaveSettingsRes.ok) {
+          const settings = await leaveSettingsRes.json();
+          setLeaveEntitlement(Number(settings?.days) || DEFAULT_LEAVE_DAYS);
+        }
+
+        if (leaveEntitlementsRes.ok) {
+          const overrides = (await leaveEntitlementsRes.json()) as { userId: string; days: number }[];
+          const map: Record<string, number> = {};
+          overrides.forEach(o => { map[o.userId] = Number(o.days); });
+          setUserLeaveEntitlements(map);
+        }
       } catch (error) {
         console.error('Error loading projects and events:', error);
       }
@@ -156,6 +303,324 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     loadProjectsAndEvents();
   }, [isAuthReady]);
+
+  // Хувийн тэмдэглэлийг зөвхөн нэвтэрсэн ажилтныхаар татна
+  useEffect(() => {
+    if (!profile?.uid) {
+      setPersonalNotes([]);
+      return;
+    }
+
+    let cancelled = false;
+    const loadNotes = async () => {
+      try {
+        const res = await fetch(`/api/personal-notes?userId=${encodeURIComponent(profile.uid)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setPersonalNotes(data as PersonalMeetingNote[]);
+      } catch (error) {
+        console.error('Personal notes fetch error:', error);
+      }
+    };
+
+    loadNotes();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.uid]);
+
+  const savePersonalNote = async (note: Partial<PersonalMeetingNote>) => {
+    if (!profile || profile.status !== 'approved') return;
+
+    const isUpdate = !!note.id && personalNotes.some(n => n.id === note.id);
+    const payload = {
+      id: note.id || Math.random().toString(36).slice(2, 11),
+      userId: profile.uid,
+      meetingId: note.meetingId,
+      meetingTitle: note.meetingTitle || '',
+      meetingDate: note.meetingDate,
+      notes: note.notes || '',
+      directorTasks: note.directorTasks || '',
+    };
+
+    const res = await fetch(isUpdate ? `/api/personal-notes/${payload.id}` : '/api/personal-notes', {
+      method: isUpdate ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хувийн тэмдэглэл хадгалах үед алдаа гарлаа.'));
+    }
+
+    const saved = (await res.json()) as PersonalMeetingNote;
+    setPersonalNotes(prev => (isUpdate ? prev.map(n => (n.id === saved.id ? saved : n)) : [saved, ...prev]));
+  };
+
+  const deletePersonalNote = async (id: string) => {
+    if (!profile) return;
+
+    const res = await fetch(`/api/personal-notes/${id}?userId=${encodeURIComponent(profile.uid)}`, {
+      method: 'DELETE',
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хувийн тэмдэглэл устгах үед алдаа гарлаа.'));
+    }
+
+    setPersonalNotes(prev => prev.filter(n => n.id !== id));
+  };
+
+  // Дууссан хурлуудын үргэлжилсэн хугацаа
+  const loadMeetingDurations = async () => {
+    try {
+      const res = await fetch('/api/meeting-signal/history');
+      if (!res.ok) return;
+      const data = await res.json();
+      setMeetingDurations(data as MeetingDuration[]);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Онлайн төлөв: 20 секунд тутам "идэвхтэй" дохио илгээнэ (нэвтэрсэн үед)
+  useEffect(() => {
+    if (!profile?.uid) return;
+    let cancelled = false;
+    const beat = async () => {
+      try {
+        await fetch('/api/presence/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: profile.uid }),
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+    if (!cancelled) beat();
+    const timer = setInterval(beat, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [profile?.uid]);
+
+  // Уншаагүй зурвасын нийт тоог тогтмол шинэчилж, цэсэн дээр тэмдэглэнэ
+  const refreshUnreadMessages = async () => {
+    if (!profile?.uid) return;
+    try {
+      const res = await fetch(`/api/messages/threads?userId=${encodeURIComponent(profile.uid)}`);
+      if (!res.ok) return;
+      const threads = (await res.json()) as { unreadCount: number }[];
+      setUnreadMessageCount(threads.reduce((sum, t) => sum + (t.unreadCount || 0), 0));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    if (!profile?.uid) {
+      setUnreadMessageCount(0);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      if (!cancelled) await refreshUnreadMessages();
+    };
+    tick();
+    const timer = setInterval(tick, 7000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [profile?.uid]);
+
+  // Онлайн төлөв — нэвтэрсэн ажилтан тогтмол "ping" илгээж, бусдад онлайн харагдана
+  useEffect(() => {
+    if (!profile?.uid) return;
+    const ping = () => {
+      fetch('/api/presence/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: profile.uid }),
+      }).catch(() => {});
+    };
+    ping();
+    const timer = setInterval(ping, 20000);
+    return () => clearInterval(timer);
+  }, [profile?.uid]);
+
+  // Live meeting signal — poll so a started meeting flashes for every logged-in user.
+  useEffect(() => {
+    if (!user) {
+      setStoredMeetingSignal(null);
+      return;
+    }
+
+    let cancelled = false;
+    const fetchSignal = async () => {
+      try {
+        const res = await fetch('/api/meeting-signal');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setStoredMeetingSignal(data?.active ? (data.signal as MeetingSignal) : null);
+      } catch {
+        /* ignore transient polling errors */
+      }
+    };
+
+    fetchSignal();
+    loadMeetingDurations();
+    const timer = setInterval(fetchSignal, 7000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [user]);
+
+  // ===== Ээлжийн амралт =====
+  const addLeaveRequest = async (request: { startDate: string; endDate: string; reason?: string }) => {
+    if (!profile || profile.status !== 'approved') return;
+
+    const res = await fetch('/api/leave-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: Math.random().toString(36).slice(2, 11),
+        userId: profile.uid,
+        userName: profile.displayName,
+        startDate: request.startDate,
+        endDate: request.endDate,
+        reason: request.reason || '',
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Амралтын хүсэлт илгээх үед алдаа гарлаа.'));
+    }
+
+    const created = (await res.json()) as LeaveRequest;
+    setStoredLeaveRequests(prev => [created, ...prev]);
+  };
+
+  const updateLeaveStatus = async (id: string, status: LeaveStatus) => {
+    if (!profile || profile.role !== 'admin') return;
+
+    const res = await fetch(`/api/leave-requests/${id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, reviewedBy: profile.uid, reviewedByName: profile.displayName }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Амралтын төлөв шинэчлэх үед алдаа гарлаа.'));
+    }
+
+    const updated = (await res.json()) as LeaveRequest;
+    setStoredLeaveRequests(prev => prev.map(r => (r.id === id ? updated : r)));
+  };
+
+  const deleteLeaveRequest = async (id: string) => {
+    if (!profile) return;
+    const target = storedLeaveRequests.find(r => r.id === id);
+    // Ажилтан зөвхөн хүлээгдэж буй өөрийн хүсэлтээ цуцалж болно, админ бүгдийг устгана
+    const allowed = profile.role === 'admin' || (target?.userId === profile.uid && target?.status === 'Pending');
+    if (!allowed) return;
+
+    const res = await fetch(`/api/leave-requests/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Амралтын хүсэлт устгах үед алдаа гарлаа.'));
+    }
+
+    setStoredLeaveRequests(prev => prev.filter(r => r.id !== id));
+  };
+
+  const updateLeaveEntitlement = async (year: number, days: number) => {
+    if (!profile || profile.role !== 'admin') return;
+
+    const res = await fetch(`/api/leave-settings/${year}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Амралтын эрх шинэчлэх үед алдаа гарлаа.'));
+    }
+
+    const data = await res.json();
+    if (Number(year) === new Date().getFullYear()) {
+      setLeaveEntitlement(Number(data?.days) || DEFAULT_LEAVE_DAYS);
+    }
+  };
+
+  // Ажилтан тус бүрийн амралтын хоног. days === null бол override устгаж, глобал өгөгдмөл рүү буцаана.
+  const updateUserLeaveEntitlement = async (userId: string, year: number, days: number | null) => {
+    if (!profile || profile.role !== 'admin') return;
+
+    const res = await fetch(`/api/leave-entitlements/${userId}/${year}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Ажилтны амралтын эрх шинэчлэх үед алдаа гарлаа.'));
+    }
+
+    const data = await res.json();
+    if (Number(year) === new Date().getFullYear()) {
+      setUserLeaveEntitlements(prev => {
+        const next = { ...prev };
+        if (data?.isOverride) next[userId] = Number(data.days);
+        else delete next[userId]; // override арилсан — глобал өгөгдмөл рүү буцна
+        return next;
+      });
+    }
+  };
+
+  // Хурал эхлүүлэх эрх: зөвхөн админ болон хурлын тэмдэглэл хөтөлдөг ('minutes' эрхтэй) хүн
+  const canStartMeeting = !!profile && profile.status === 'approved' &&
+    (profile.role === 'admin' || (profile.permissions || []).includes('minutes'));
+
+  const startMeetingSignal = async (meeting: { meetingId?: string; title: string; time?: string }) => {
+    if (!canStartMeeting || !profile) return;
+
+    const res = await fetch('/api/meeting-signal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        meetingId: meeting.meetingId,
+        title: meeting.title,
+        time: meeting.time,
+        startedBy: profile.uid,
+        startedByName: profile.displayName,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хурал эхлүүлэх үед алдаа гарлаа.'));
+    }
+
+    const data = await res.json();
+    setStoredMeetingSignal(data?.signal as MeetingSignal);
+  };
+
+  const endMeetingSignal = async () => {
+    // Дуусгах эрх: админ эсвэл дохиог эхлүүлсэн хүн
+    if (!profile) return;
+    const isStarter = storedMeetingSignal?.startedBy === profile.uid;
+    if (profile.role !== 'admin' && !isStarter) return;
+
+    const res = await fetch('/api/meeting-signal/end', { method: 'POST' });
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хурал дуусгах үед алдаа гарлаа.'));
+    }
+    setStoredMeetingSignal(null);
+    // Дууссан хурлын үргэлжилсэн хугацааг шууд татаж шинэчилнэ
+    await loadMeetingDurations();
+  };
 
   const login = async () => {
     throw new Error('Google login disabled');
@@ -226,7 +691,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateManagedUser = async (
     uid: string,
-    updates: { firstName: string; lastName: string; department: Department; password?: string }
+    updates: { email?: string; firstName: string; lastName: string; department: Department; password?: string; role?: UserRole; permissions?: UserPermission[] }
   ) => {
     if (!profile || profile.role !== 'admin') {
       throw new Error('Админ эрх шаардлагатай.');
@@ -253,6 +718,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const updatedUser = {
           ...user,
           displayName: updatedProfile.displayName,
+          email: updatedProfile.email,
         };
         setUser(updatedUser);
         localStorage.setItem(AUTH_USER_KEY, JSON.stringify(updatedUser));
@@ -260,6 +726,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     return updatedProfile;
+  };
+
+  const createManagedUser = async (
+    data: { email: string; password: string; firstName: string; lastName: string; department: Department; role: UserRole; permissions: UserPermission[] }
+  ) => {
+    if (!profile || profile.role !== 'admin') {
+      throw new Error('Админ эрх шаардлагатай.');
+    }
+
+    const res = await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: data.email,
+        password: data.password,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        department: data.department,
+        role: data.role,
+        permissions: data.permissions,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хэрэглэгч нэмэх үед алдаа гарлаа.'));
+    }
+
+    const result = await res.json();
+    return result.profile as UserProfile;
+  };
+
+  const deleteManagedUser = async (uid: string) => {
+    if (!profile || profile.role !== 'admin') {
+      throw new Error('Админ эрх шаардлагатай.');
+    }
+    if (profile.uid === uid) {
+      throw new Error('Өөрийгөө устгах боломжгүй.');
+    }
+
+    const res = await fetch(`/api/users/${uid}`, { method: 'DELETE' });
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хэрэглэгч устгах үед алдаа гарлаа.'));
+    }
   };
 
   const addProject = async (project: Project) => {
@@ -321,7 +830,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addEvent = async (event: Event) => {
-    if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
+    if (!profile || profile.status !== 'approved') return;
+    if (profile.role !== 'admin' && !(hasPermission('meeting') && event.category === 'Meeting')) return;
 
     const res = await fetch('/api/events', {
       method: 'POST',
@@ -337,7 +847,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateEvent = async (event: Event) => {
-    if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
+    if (!profile || profile.status !== 'approved') return;
+    if (profile.role !== 'admin' && !(hasPermission('meeting') && event.category === 'Meeting')) return;
 
     const res = await fetch(`/api/events/${event.id}`, {
       method: 'PUT',
@@ -353,7 +864,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteEvent = async (id: string) => {
-    if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
+    if (!profile || profile.status !== 'approved') return;
+    const target = storedEvents.find(e => e.id === id);
+    if (profile.role !== 'admin' && !(hasPermission('meeting') && target?.category === 'Meeting')) return;
 
     const res = await fetch(`/api/events/${id}`, {
       method: 'DELETE',
@@ -365,6 +878,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setStoredEvents(prev => prev.filter(e => e.id !== id));
   };
+
+  // Хурал нэмэх эрх: админ эсвэл 'meeting' эрхтэй ажилтан
+  const canManageMeetings = !!profile && profile.status === 'approved' &&
+    (profile.role === 'admin' || (profile.permissions || []).includes('meeting'));
+
+  // Давтамжийн дагуу олон хурлын бичлэг (event, category='Meeting') үүсгэнэ. Үүсгэсэн тоог буцаана.
+  const createMeetingSeries = async (meeting: NewMeetingInput) => {
+    if (!canManageMeetings) return 0;
+
+    const dates = generateOccurrenceDates(meeting.date, meeting.recurrence);
+    if (dates.length === 0) throw new Error('Хурлын огноо буруу байна.');
+
+    const seriesId = meeting.recurrence === 'none' ? undefined : Math.random().toString(36).slice(2, 11);
+    // Зөвхөн оролцогчид болон тэмдэглэл хөтлөгчид харагдана (аль нь ч сонгогдоогүй бол бүгдэд)
+    const visibleToUserIds = Array.from(new Set([
+      ...(meeting.attendeeUserIds || []),
+      ...(meeting.minutesKeeperUserId ? [meeting.minutesKeeperUserId] : []),
+    ]));
+
+    const created: Event[] = dates.map(date => ({
+      id: Math.random().toString(36).slice(2, 11),
+      title: meeting.title,
+      description: meeting.description || '',
+      date,
+      time: meeting.time,
+      category: 'Meeting',
+      priority: 'Medium',
+      tags: [],
+      attachments: [],
+      visibleToUserIds,
+      endTime: meeting.endTime || undefined,
+      durationMinutes: meeting.durationMinutes,
+      recurrence: meeting.recurrence,
+      meetingType: meeting.meetingType,
+      location: meeting.location || undefined,
+      attendeeUserIds: meeting.attendeeUserIds || [],
+      minutesKeeperUserId: meeting.minutesKeeperUserId || undefined,
+      seriesId,
+    }));
+
+    for (const event of created) {
+      const res = await fetch('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(event),
+      });
+      if (!res.ok) {
+        throw new Error(await parseErrorMessage(res, 'Хурал үүсгэх үед алдаа гарлаа.'));
+      }
+    }
+
+    setStoredEvents(prev => [...prev, ...created]);
+    return created.length;
+  };
+
   const addTask = async (task: Task) => {
     if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
 
@@ -376,6 +944,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (!res.ok) {
       throw new Error(await parseErrorMessage(res, 'Даалгавар хадгалах үед алдаа гарлаа.'));
+    }
+
+    setStoredTasks(prev => [...prev, task]);
+  };
+
+  // Хурлын тэмдэглэл хөтөлдөг хүн (админ эсвэл 'minutes' эрхтэй) сонгосон ажилтнуудад даалгавар өгнө
+  const assignMeetingTask = async (data: { title: string; description?: string; dueDate: string; assignedToUserIds: string[]; sourceLabel?: string }) => {
+    if (!profile || profile.status !== 'approved') return;
+    const canAssign = profile.role === 'admin' || (profile.permissions || []).includes('minutes');
+    if (!canAssign) return;
+    if (!data.title.trim() || !data.dueDate || data.assignedToUserIds.length === 0) {
+      throw new Error('Даалгаврын нэр, огноо, хүлээн авагчийг оруулна уу.');
+    }
+
+    const task: Task = {
+      id: Math.random().toString(36).slice(2, 11),
+      projectId: '',
+      sourceLabel: data.sourceLabel || undefined,
+      assignedByName: profile.displayName,
+      title: data.title.trim(),
+      description: data.description || '',
+      assignedToUserIds: data.assignedToUserIds,
+      dueDate: data.dueDate,
+      status: 'Pending',
+      attachments: [],
+      createdAt: new Date().toISOString(),
+    };
+
+    const res = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(task),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Даалгавар өгөх үед алдаа гарлаа.'));
     }
 
     setStoredTasks(prev => [...prev, task]);
@@ -428,7 +1032,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addProcurementPlan = async (plan: ProcurementPlan) => {
-    if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
+    if (!hasPermission('procurement')) return;
 
     const res = await fetch('/api/procurement-plans', {
       method: 'POST',
@@ -444,7 +1048,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateProcurementPlan = async (plan: ProcurementPlan) => {
-    if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
+    const existing = storedProcurementPlans.find(p => p.id === plan.id);
+    if (!canEditProcurement(existing)) return;
 
     const res = await fetch(`/api/procurement-plans/${plan.id}`, {
       method: 'PUT',
@@ -460,7 +1065,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteProcurementPlan = async (id: string) => {
-    if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
+    const existing = storedProcurementPlans.find(p => p.id === id);
+    if (!canEditProcurement(existing)) return;
 
     const res = await fetch(`/api/procurement-plans/${id}`, {
       method: 'DELETE',
@@ -471,6 +1077,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     setStoredProcurementPlans(prev => prev.filter(p => p.id !== id));
+  };
+
+  // Тэмдэглэл хөтлөх (нэмэх, засах, устгах) эрх: ЗӨВХӨН админ болон 'minutes' эрх олгогдсон ажилтан.
+  // Энгийн ажилтан өөрт харагдах тэмдэглэлийг зөвхөн УНШИНА (canViewMinutesItem-ээр шүүгдэнэ).
+  const canManageMinutes = (_minutes?: MeetingMinutes) => {
+    if (!profile || profile.status !== 'approved') return false;
+    if (profile.role === 'admin') return true;
+    return (profile.permissions || []).includes('minutes');
+  };
+
+  const addMeetingMinutes = async (minutes: MeetingMinutes) => {
+    if (!canManageMinutes()) return;
+
+    const res = await fetch('/api/meeting-minutes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minutes),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хурлын тэмдэглэл нэмэх үед алдаа гарлаа.'));
+    }
+
+    setStoredMeetingMinutes(prev => [minutes, ...prev]);
+  };
+
+  const updateMeetingMinutes = async (minutes: MeetingMinutes) => {
+    const existing = storedMeetingMinutes.find(m => m.id === minutes.id);
+    if (!canManageMinutes(existing)) return;
+
+    const res = await fetch(`/api/meeting-minutes/${minutes.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minutes),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хурлын тэмдэглэл засах үед алдаа гарлаа.'));
+    }
+
+    setStoredMeetingMinutes(prev => prev.map(m => (m.id === minutes.id ? minutes : m)));
+  };
+
+  const deleteMeetingMinutes = async (id: string) => {
+    const existing = storedMeetingMinutes.find(m => m.id === id);
+    if (!canManageMinutes(existing)) return;
+
+    const res = await fetch(`/api/meeting-minutes/${id}`, {
+      method: 'DELETE',
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Хурлын тэмдэглэл устгах үед алдаа гарлаа.'));
+    }
+
+    setStoredMeetingMinutes(prev => prev.filter(m => m.id !== id));
   };
 
   const updateProfilePicture = async (photoDataUrl: string) => {
@@ -519,15 +1181,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addEvent,
         updateEvent,
         deleteEvent,
+        canManageMeetings,
+        createMeetingSeries,
         addTask,
+        assignMeetingTask,
         updateTask,
         deleteTask,
         updateTaskStatus,
+        canEditProcurement,
+        canAccessProcurement,
         addProcurementPlan,
         updateProcurementPlan,
         deleteProcurementPlan,
+        meetingMinutes,
+        addMeetingMinutes,
+        updateMeetingMinutes,
+        deleteMeetingMinutes,
+        canManageMinutes,
+        personalNotes,
+        savePersonalNote,
+        deletePersonalNote,
+        leaveRequests,
+        leaveEntitlement,
+        leaveYear,
+        leaveEntitlementFor,
+        addLeaveRequest,
+        updateLeaveStatus,
+        deleteLeaveRequest,
+        updateLeaveEntitlement,
+        updateUserLeaveEntitlement,
+        unreadMessageCount,
+        refreshUnreadMessages,
+        meetingSignal: storedMeetingSignal,
+        meetingDurations,
+        canStartMeeting,
+        startMeetingSignal,
+        endMeetingSignal,
         updateUserStatus,
         updateManagedUser,
+        createManagedUser,
+        deleteManagedUser,
         updateProfilePicture,
       }}
     >

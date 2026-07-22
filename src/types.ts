@@ -1,5 +1,5 @@
 export type ProjectStatus = 'Planning' | 'Ongoing' | 'Completed';
-export type EventCategory = 'Project' | 'Environmental' | 'Internal' | 'Birthday';
+export type EventCategory = 'Project' | 'Environmental' | 'Internal' | 'Birthday' | 'Meeting' | 'Report';
 export type Priority = 'Low' | 'Medium' | 'High';
 export type EnvironmentalTag = 'Water' | 'Climate' | 'Forest' | 'Waste' | 'Peatland' | 'Report';
 export type TaskStatus = 'Pending' | 'InProgress' | 'Completed';
@@ -21,6 +21,7 @@ export interface Event {
   title: string;
   description: string;
   date: string;
+  time?: string;
   category: EventCategory;
   priority: Priority;
   birthdayUserId?: string;
@@ -29,7 +30,30 @@ export interface Event {
   attachments?: EventAttachment[];
   visibleToUserIds?: string[];
   hiddenFromUserIds?: string[];
+  // Хурлын нэмэлт талбарууд (category === 'Meeting')
+  endTime?: string;               // Дуусах цаг (эхлэх цаг + хугацаа)
+  durationMinutes?: number;       // Хугацаа (минут)
+  recurrence?: MeetingRecurrence; // Давтамж
+  meetingType?: MeetingType;      // Танхимын / Цахим
+  location?: string;              // Хуралдах байр
+  attendeeUserIds?: string[];     // Хуралд оролцох хэрэглэгчид
+  minutesKeeperUserId?: string;   // Хурлын тэмдэглэл хөтлөх хэрэглэгч
+  seriesId?: string;              // Давтагдах хурлын цуврал id
 }
+
+// Хурлын давтамж ба төрөл
+export type MeetingRecurrence =
+  | 'none'        // Ээлжит бус
+  | 'daily'       // Өдөр дутам
+  | 'every3days'  // 3 хоног тутам
+  | 'every5days'  // 5 хоног тутам
+  | 'weekly'      // 7 хоног тутам
+  | 'every14days' // 14 хоног тутам
+  | 'every21days' // 21 хоног тутам
+  | 'monthly'     // Сар тутам
+  | 'quarterly';  // Улирал тутам
+
+export type MeetingType = 'inperson' | 'online'; // Танхимын / Цахим
 
 export interface EventAttachment {
   id: string;
@@ -41,7 +65,9 @@ export interface EventAttachment {
 
 export interface Task {
   id: string;
-  projectId: string;
+  projectId: string;        // хурлаас өгсөн даалгаварт хоосон байж болно
+  sourceLabel?: string;     // эх сурвалж (жишээ нь хурлын нэр)
+  assignedByName?: string;  // даалгавар өгсөн хүн
   title: string;
   description: string;
   assignedToUserIds: string[];
@@ -77,7 +103,109 @@ export interface ProcurementPlan {
   payment3: number;
   variance: string;
   extraNotes: string;
+  visibleToUserIds?: string[];   // хоосон бол бүгд харна
+  editableByUserIds?: string[];  // хоосон бол 'procurement' эрхтэй бүх ажилтан засна
+}
+
+export interface MeetingMinutes {
+  id: string;
+  title: string;
+  date: string;
+  time?: string;
+  attendeeUserIds: string[];
+  agenda: string;      // Хэлэлцсэн асуудал
+  decisions: string;   // Гаргасан шийдвэр
+  notes: string;       // Тэмдэглэл
+  attachments?: EventAttachment[];
   visibleToUserIds?: string[];
+  createdBy?: string;
+}
+
+// Ажилчид хоорондын шууд зурвас
+export interface DirectMessage {
+  id: string;
+  senderId: string;
+  recipientId: string;
+  content: string;
+  attachments?: EventAttachment[];
+  readAt?: string;
+  createdAt: string;
+}
+
+// Ярианы товч мэдээлэл (зурвасын жагсаалтад)
+export interface MessageThreadSummary {
+  otherUserId: string;
+  lastMessage: string;
+  lastAt: string;
+  lastSenderId: string;
+  unreadCount: number;
+  hasAttachment: boolean;
+}
+
+// Ажилтны ХУВИЙН хурлын тэмдэглэл — зөвхөн бичсэн ажилтанд харагдана
+export interface PersonalMeetingNote {
+  id: string;
+  userId: string;
+  meetingId?: string;
+  meetingTitle: string;
+  meetingDate?: string; // yyyy-MM-dd
+  notes: string;         // Хурлын тэмдэглэл
+  directorTasks: string; // Захирлаас өгсөн үүрэг даалгавар
+  createdAt: string;
+  updatedAt?: string;
+}
+
+// ===== Ээлжийн амралт =====
+export type LeaveStatus = 'Pending' | 'Approved' | 'Rejected';
+
+// Жилд эдлэх ажлын өдөр, хамгийн ихдээ хэдэн хэсэг болгон хуваахыг зөвшөөрөх
+export const DEFAULT_LEAVE_DAYS = 15;
+export const MAX_LEAVE_SPLITS = 4;
+
+export interface LeaveRequest {
+  id: string;
+  userId: string;
+  userName: string;
+  startDate: string; // yyyy-MM-dd
+  endDate: string;   // yyyy-MM-dd
+  days: number;      // ажлын өдрөөр автоматаар тооцогдоно
+  reason?: string;
+  status: LeaveStatus;
+  year: number;
+  createdAt: string;
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+}
+
+export interface LeaveBalance {
+  entitlement: number;  // нийт эрхтэй (15 ажлын өдөр)
+  approved: number;     // батлагдсан хоног
+  pending: number;      // хүлээгдэж буй хоног
+  used: number;         // ашигласан (батлагдсан)
+  remaining: number;    // үлдсэн
+  usageCount: number;   // хэдэн удаа авсан (батлагдсан + хүлээгдэж буй)
+  maxSplits: number;
+}
+
+// Идэвхтэй (эхэлсэн) хурлын дохио — бүх ажилтанд гэрэл анивчиж харагдана
+// Дууссан хурал хэр удсан бэ
+export interface MeetingDuration {
+  meetingId?: string;
+  title: string;
+  startedAt: string;
+  endedAt: string;
+  durationMinutes: number;
+}
+
+export interface MeetingSignal {
+  id: number;
+  meetingId?: string;
+  title: string;
+  time?: string;
+  startedBy?: string;
+  startedByName?: string;
+  startedAt: string;
 }
 
 export type DirectorTaskStatus = 'NotStarted' | 'InProgress' | 'Completed' | 'Cancelled';
@@ -118,6 +246,10 @@ export type Theme = 'light' | 'dark';
 export type UserStatus = 'pending' | 'approved' | 'rejected';
 export type UserRole = 'admin' | 'user';
 
+// Нэмэлт хандалтын эрх: админ бүх эрхтэй, энгийн хэрэглэгч эдгээрээс олгогдсоныг ашиглана.
+// 'procurement' = Худалдан авалт засах, 'procurement_view' = зөвхөн харах (аль нь ч биш бол огт харагдахгүй)
+export type UserPermission = 'procurement' | 'procurement_view' | 'meeting' | 'minutes';
+
 export type Department = 
   | 'Захиргаа, санхүүгийн хэлтэс'
   | 'Төсөл, хөтөлбөр, хамтын ажиллагааны хэлтэс'
@@ -133,6 +265,7 @@ export interface UserProfile {
   photoURL?: string;
   department: Department;
   role: UserRole;
+  permissions?: UserPermission[];
   status: UserStatus;
   createdAt: string;
 }
