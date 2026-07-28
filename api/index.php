@@ -225,6 +225,153 @@ function db(): PDO
         $pdo->exec('ALTER TABLE tasks ADD COLUMN attachments LONGTEXT NULL AFTER status');
     }
 
+    // ===== 2026 шинэчлэл: нэмэлт баганууд =====
+    if (!column_exists($pdo, 'users', 'permissions')) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN permissions LONGTEXT NULL AFTER role');
+    }
+    if (!column_exists($pdo, 'events', 'time')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN `time` VARCHAR(5) NULL AFTER date');
+    }
+    if (!column_exists($pdo, 'events', 'end_time')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN end_time VARCHAR(5) NULL AFTER `time`');
+    }
+    if (!column_exists($pdo, 'events', 'duration_minutes')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN duration_minutes INT NULL AFTER end_time');
+    }
+    if (!column_exists($pdo, 'events', 'recurrence')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN recurrence VARCHAR(20) NULL AFTER duration_minutes');
+    }
+    if (!column_exists($pdo, 'events', 'meeting_type')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN meeting_type VARCHAR(20) NULL AFTER recurrence');
+    }
+    if (!column_exists($pdo, 'events', 'location')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN location VARCHAR(255) NULL AFTER meeting_type');
+    }
+    if (!column_exists($pdo, 'events', 'attendee_user_ids')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN attendee_user_ids LONGTEXT NULL AFTER location');
+    }
+    if (!column_exists($pdo, 'events', 'minutes_keeper_user_id')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN minutes_keeper_user_id VARCHAR(36) NULL AFTER attendee_user_ids');
+    }
+    if (!column_exists($pdo, 'events', 'series_id')) {
+        $pdo->exec('ALTER TABLE events ADD COLUMN series_id VARCHAR(36) NULL AFTER minutes_keeper_user_id');
+    }
+    // events.category ENUM-д Meeting/Report нэмэх (шаардлагатай үед л)
+    try {
+        $col = $pdo->query("SELECT COLUMN_TYPE FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'events' AND column_name = 'category'")->fetch();
+        if ($col && stripos((string)$col['COLUMN_TYPE'], 'Meeting') === false) {
+            $pdo->exec("ALTER TABLE events MODIFY COLUMN category ENUM('Project','Environmental','Internal','Birthday','Meeting','Report') NOT NULL");
+        }
+    } catch (Throwable $e) { /* ignore */ }
+    // tasks: source_label, assigned_by_name + project_id NULL
+    if (!column_exists($pdo, 'tasks', 'source_label')) {
+        $pdo->exec('ALTER TABLE tasks ADD COLUMN source_label VARCHAR(255) NULL AFTER project_id');
+    }
+    if (!column_exists($pdo, 'tasks', 'assigned_by_name')) {
+        $pdo->exec('ALTER TABLE tasks ADD COLUMN assigned_by_name VARCHAR(255) NULL AFTER source_label');
+    }
+    try {
+        $c = $pdo->query("SELECT IS_NULLABLE FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'tasks' AND column_name = 'project_id'")->fetch();
+        if ($c && strtoupper((string)$c['IS_NULLABLE']) === 'NO') {
+            $pdo->exec('ALTER TABLE tasks MODIFY COLUMN project_id VARCHAR(36) NULL');
+        }
+    } catch (Throwable $e) { /* ignore */ }
+    // procurement_plans.editable_by_user_ids
+    if (!column_exists($pdo, 'procurement_plans', 'editable_by_user_ids')) {
+        $pdo->exec('ALTER TABLE procurement_plans ADD COLUMN editable_by_user_ids LONGTEXT NULL AFTER visible_to_user_ids');
+    }
+
+    // ===== 2026 шинэчлэл: шинэ хүснэгтүүд =====
+    $pdo->exec("CREATE TABLE IF NOT EXISTS meeting_minutes (
+        id VARCHAR(36) PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        date DATE NOT NULL,
+        `time` VARCHAR(5) NULL,
+        attendee_user_ids LONGTEXT,
+        agenda LONGTEXT,
+        decisions LONGTEXT,
+        notes LONGTEXT,
+        attachments LONGTEXT,
+        visible_to_user_ids LONGTEXT,
+        created_by VARCHAR(36) NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS leave_requests (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        user_name VARCHAR(255) NOT NULL,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        days INT NOT NULL DEFAULT 0,
+        reason TEXT,
+        status ENUM('Pending','Approved','Rejected') NOT NULL DEFAULT 'Pending',
+        `year` INT NOT NULL,
+        reviewed_by VARCHAR(36) NULL,
+        reviewed_by_name VARCHAR(255) NULL,
+        reviewed_at TIMESTAMP NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_leave_user_year (user_id, `year`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS leave_settings (
+        `year` INT PRIMARY KEY,
+        days INT NOT NULL DEFAULT 15,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS leave_entitlements (
+        user_id VARCHAR(36) NOT NULL,
+        `year` INT NOT NULL,
+        days INT NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, `year`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS meeting_signals (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        meeting_id VARCHAR(36) NULL,
+        title VARCHAR(255) NOT NULL,
+        meeting_time VARCHAR(5) NULL,
+        started_by VARCHAR(36) NULL,
+        started_by_name VARCHAR(255) NULL,
+        started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ended_at TIMESTAMP NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS messages (
+        id VARCHAR(36) PRIMARY KEY,
+        sender_id VARCHAR(36) NOT NULL,
+        recipient_id VARCHAR(36) NOT NULL,
+        content LONGTEXT,
+        attachments LONGTEXT,
+        read_at TIMESTAMP NULL,
+        created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        INDEX idx_msg_recipient (recipient_id),
+        INDEX idx_msg_pair (sender_id, recipient_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS personal_meeting_notes (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        meeting_id VARCHAR(36) NULL,
+        meeting_title VARCHAR(255) NOT NULL,
+        meeting_date DATE NULL,
+        notes LONGTEXT,
+        director_tasks LONGTEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_personal_notes_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Онлайн төлөв (PHP stateless тул хүснэгтэд хадгална)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS user_presence (
+        user_id VARCHAR(36) PRIMARY KEY,
+        last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
     $pdo->exec(
         "CREATE TABLE IF NOT EXISTS director_tasks (
             id VARCHAR(36) PRIMARY KEY,
@@ -308,6 +455,7 @@ function procurement_payload(array $body): array
         'variance' => (string)($body['variance'] ?? ''),
         'extra_notes' => (string)($body['extraNotes'] ?? ''),
         'visible_to_user_ids' => json_encode(is_array($body['visibleToUserIds'] ?? null) ? $body['visibleToUserIds'] : []),
+        'editable_by_user_ids' => json_encode(is_array($body['editableByUserIds'] ?? null) ? $body['editableByUserIds'] : []),
     ];
 }
 
@@ -319,6 +467,55 @@ function to_iso($value): string
     }
     return gmdate('c', $time);
 }
+
+function to_local_date($value): string
+{
+    return substr((string)$value, 0, 10);
+}
+
+// Ажлын өдрийн тоо (эхлэх/дуусах өдрийг оруулна, амралтын өдрийг тооцохгүй)
+function count_working_days(string $start, string $end): int
+{
+    $s = DateTime::createFromFormat('Y-m-d', substr($start, 0, 10));
+    $e = DateTime::createFromFormat('Y-m-d', substr($end, 0, 10));
+    if (!$s || !$e) {
+        return 0;
+    }
+    $s->setTime(0, 0);
+    $e->setTime(0, 0);
+    if ($e < $s) {
+        return 0;
+    }
+    $count = 0;
+    $cur = clone $s;
+    while ($cur <= $e) {
+        $dow = (int)$cur->format('N'); // 1=Даваа .. 7=Ням
+        if ($dow < 6) {
+            $count++;
+        }
+        $cur->modify('+1 day');
+    }
+    return $count;
+}
+
+// Тухайн ажилтны амралтын эрх: override байвал түүнийг, эс бөгөөс глобал өгөгдмөл (15)
+function leave_entitlement(PDO $pdo, int $year, ?string $userId = null): int
+{
+    if ($userId !== null && $userId !== '') {
+        $st = $pdo->prepare('SELECT days FROM leave_entitlements WHERE user_id = :u AND `year` = :y LIMIT 1');
+        $st->execute(['u' => $userId, 'y' => $year]);
+        $r = $st->fetch();
+        if ($r) {
+            return (int)$r['days'];
+        }
+    }
+    $st = $pdo->prepare('SELECT days FROM leave_settings WHERE `year` = :y LIMIT 1');
+    $st->execute(['y' => $year]);
+    $r = $st->fetch();
+    return $r ? (int)$r['days'] : 15;
+}
+
+const MAX_LEAVE_SPLITS = 4;
 
 function to_profile(array $row): array
 {
@@ -333,6 +530,7 @@ function to_profile(array $row): array
         'photoURL' => $row['photo_url'] ?: null,
         'department' => $row['department'],
         'role' => $row['role'],
+        'permissions' => json_field($row['permissions'] ?? null),
         'status' => $row['status'],
         'createdAt' => to_iso($row['created_at'] ?? ''),
     ];
@@ -473,6 +671,52 @@ try {
         json_response(['success' => true]);
     }
 
+    if ($method === 'POST' && $route === '/users') {
+        $username = strtolower(trim((string)($body['username'] ?? '')));
+        $password = (string)($body['password'] ?? '');
+        $firstName = trim((string)($body['firstName'] ?? ''));
+        $lastName = trim((string)($body['lastName'] ?? ''));
+        $department = trim((string)($body['department'] ?? ''));
+
+        if ($username === '' || $password === '' || $firstName === '' || $lastName === '' || $department === '') {
+            json_response(['message' => 'Бүх талбарыг бөглөнө үү.'], 400);
+        }
+        if (str_contains($username, '@')) {
+            json_response(['message' => 'Нэвтрэх нэрэнд @ тэмдэгт ашиглахгүй.'], 400);
+        }
+        if (strlen(trim($password)) < 6) {
+            json_response(['message' => 'Нууц үг хамгийн багадаа 6 тэмдэгт байна.'], 400);
+        }
+
+        $allowedPerms = ['procurement', 'procurement_view', 'meeting', 'minutes'];
+        $role = ((string)($body['role'] ?? 'user')) === 'admin' ? 'admin' : 'user';
+        $perms = array_values(array_filter(is_array($body['permissions'] ?? null) ? $body['permissions'] : [], fn ($p) => in_array($p, $allowedPerms, true)));
+
+        $exists = $pdo->prepare('SELECT id FROM users WHERE username = :username LIMIT 1');
+        $exists->execute(['username' => $username]);
+        if ($exists->fetch()) {
+            json_response(['message' => 'Энэ нэвтрэх нэр бүртгэлтэй байна.'], 409);
+        }
+
+        $insert = $pdo->prepare(
+            "INSERT INTO users (username, password_hash, first_name, last_name, department, role, permissions, status)
+             VALUES (:username, :password_hash, :first_name, :last_name, :department, :role, :permissions, 'approved')"
+        );
+        $insert->execute([
+            'username' => $username,
+            'password_hash' => password_hash($password, PASSWORD_BCRYPT),
+            'first_name' => $firstName,
+            'last_name' => $lastName,
+            'department' => $department,
+            'role' => $role,
+            'permissions' => json_encode($perms),
+        ]);
+
+        $rowStmt = $pdo->prepare('SELECT * FROM users WHERE username = :username LIMIT 1');
+        $rowStmt->execute(['username' => $username]);
+        json_response(['success' => true, 'profile' => to_profile($rowStmt->fetch())], 201);
+    }
+
     if ($method === 'PATCH' && preg_match('#^/users/(\d+)$#', $route, $matches)) {
         $uid = (int)$matches[1];
         $firstName = trim((string)($body['firstName'] ?? ''));
@@ -484,42 +728,84 @@ try {
             json_response(['message' => 'Нэр болон хэлтсийн мэдээллийг бүрэн оруулна уу.'], 400);
         }
 
-        if ($password !== '' && strlen($password) < 6) {
-            json_response(['message' => 'Нууц үг хамгийн багадаа 6 тэмдэгт байна.'], 400);
+        $sets = ['first_name = :first_name', 'last_name = :last_name', 'department = :department'];
+        $params = ['first_name' => $firstName, 'last_name' => $lastName, 'department' => $department, 'id' => $uid];
+
+        if (array_key_exists('email', $body)) {
+            $newUsername = strtolower(trim((string)$body['email']));
+            if ($newUsername === '') {
+                json_response(['message' => 'Нэвтрэх нэрээ оруулна уу.'], 400);
+            }
+            if (str_contains($newUsername, '@')) {
+                json_response(['message' => 'Нэвтрэх нэрэнд @ тэмдэгт ашиглахгүй.'], 400);
+            }
+            $dup = $pdo->prepare('SELECT id FROM users WHERE username = :u AND id <> :id LIMIT 1');
+            $dup->execute(['u' => $newUsername, 'id' => $uid]);
+            if ($dup->fetch()) {
+                json_response(['message' => 'Энэ нэвтрэх нэр бүртгэлтэй байна.'], 409);
+            }
+            $sets[] = 'username = :username';
+            $params['username'] = $newUsername;
+        }
+
+        if (array_key_exists('role', $body)) {
+            $role = (string)$body['role'];
+            if (!in_array($role, ['admin', 'user'], true)) {
+                json_response(['message' => 'Хэрэглэгчийн эрх буруу байна.'], 400);
+            }
+            $sets[] = 'role = :role';
+            $params['role'] = $role;
+        }
+
+        if (array_key_exists('permissions', $body)) {
+            $allowedPerms = ['procurement', 'procurement_view', 'meeting', 'minutes'];
+            $perms = is_array($body['permissions']) ? $body['permissions'] : [];
+            foreach ($perms as $p) {
+                if (!in_array($p, $allowedPerms, true)) {
+                    json_response(['message' => 'Хандалтын эрх буруу байна.'], 400);
+                }
+            }
+            $sets[] = 'permissions = :permissions';
+            $params['permissions'] = json_encode(array_values($perms));
         }
 
         if ($password !== '') {
-            $stmt = $pdo->prepare(
-                'UPDATE users SET first_name = :first_name, last_name = :last_name, department = :department, password_hash = :password_hash, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
-            );
-            $stmt->execute([
-                'first_name' => $firstName,
-                'last_name' => $lastName,
-                'department' => $department,
-                'password_hash' => password_hash($password, PASSWORD_BCRYPT),
-                'id' => $uid,
-            ]);
-        } else {
-            $stmt = $pdo->prepare(
-                'UPDATE users SET first_name = :first_name, last_name = :last_name, department = :department, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
-            );
-            $stmt->execute([
-                'first_name' => $firstName,
-                'last_name' => $lastName,
-                'department' => $department,
-                'id' => $uid,
-            ]);
+            if (strlen($password) < 6) {
+                json_response(['message' => 'Нууц үг хамгийн багадаа 6 тэмдэгт байна.'], 400);
+            }
+            $sets[] = 'password_hash = :password_hash';
+            $params['password_hash'] = password_hash($password, PASSWORD_BCRYPT);
         }
+
+        $stmt = $pdo->prepare('UPDATE users SET ' . implode(', ', $sets) . ', updated_at = CURRENT_TIMESTAMP WHERE id = :id');
+        $stmt->execute($params);
 
         $rowStmt = $pdo->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
         $rowStmt->execute(['id' => $uid]);
         $row = $rowStmt->fetch();
-
         if (!$row) {
             json_response(['message' => 'Хэрэглэгч олдсонгүй.'], 404);
         }
-
         json_response(['success' => true, 'profile' => to_profile($row)]);
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/users/(\d+)$#', $route, $matches)) {
+        $uid = (int)$matches[1];
+        $row = $pdo->prepare('SELECT id, role FROM users WHERE id = :id LIMIT 1');
+        $row->execute(['id' => $uid]);
+        $target = $row->fetch();
+        if (!$target) {
+            json_response(['message' => 'Хэрэглэгч олдсонгүй.'], 404);
+        }
+        if ($target['role'] === 'admin') {
+            $cnt = (int)($pdo->query("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'")->fetch()['c'] ?? 0);
+            if ($cnt <= 1) {
+                json_response(['message' => 'Сүүлчийн админ хэрэглэгчийг устгах боломжгүй.'], 400);
+            }
+        }
+        $stmt = $pdo->prepare('DELETE FROM users WHERE id = :id');
+        $stmt->execute(['id' => $uid]);
+        json_response(['success' => true]);
     }
 
     if ($method === 'PATCH' && preg_match('#^/users/(\d+)/photo$#', $route, $matches)) {
@@ -622,6 +908,7 @@ try {
                 'title' => $row['title'],
                 'description' => $row['description'],
                 'date' => $row['date'],
+                'time' => ($row['time'] ?? null) ?: null,
                 'category' => $row['category'],
                 'priority' => $row['priority'],
                 'birthdayUserId' => $row['birthday_user_id'] !== null ? (string)$row['birthday_user_id'] : null,
@@ -629,6 +916,14 @@ try {
                 'tags' => json_field($row['tags'] ?? null),
                 'attachments' => json_field($row['attachments'] ?? null),
                 'visibleToUserIds' => json_field($row['visible_to_user_ids'] ?? null),
+                'endTime' => ($row['end_time'] ?? null) ?: null,
+                'durationMinutes' => ($row['duration_minutes'] ?? null) === null ? null : (int)$row['duration_minutes'],
+                'recurrence' => ($row['recurrence'] ?? null) ?: null,
+                'meetingType' => ($row['meeting_type'] ?? null) ?: null,
+                'location' => ($row['location'] ?? null) ?: null,
+                'attendeeUserIds' => json_field($row['attendee_user_ids'] ?? null),
+                'minutesKeeperUserId' => ($row['minutes_keeper_user_id'] ?? null) ?: null,
+                'seriesId' => ($row['series_id'] ?? null) ?: null,
             ];
         }
         json_response($events);
@@ -655,14 +950,17 @@ try {
         }
 
         $stmt = $pdo->prepare(
-            'INSERT INTO events (id, title, description, date, category, priority, birthday_user_id, project_id, tags, attachments, visible_to_user_ids)
-             VALUES (:id, :title, :description, :date, :category, :priority, :birthday_user_id, :project_id, :tags, :attachments, :visible_to_user_ids)'
+            'INSERT INTO events (id, title, description, date, `time`, category, priority, birthday_user_id, project_id, tags, attachments, visible_to_user_ids,
+                end_time, duration_minutes, recurrence, meeting_type, location, attendee_user_ids, minutes_keeper_user_id, series_id)
+             VALUES (:id, :title, :description, :date, :time, :category, :priority, :birthday_user_id, :project_id, :tags, :attachments, :visible_to_user_ids,
+                :end_time, :duration_minutes, :recurrence, :meeting_type, :location, :attendee_user_ids, :minutes_keeper_user_id, :series_id)'
         );
         $stmt->execute([
             'id' => $id,
             'title' => $title,
             'description' => (string)($body['description'] ?? ''),
             'date' => $date,
+            'time' => ($body['time'] ?? null) ?: null,
             'category' => $category,
             'priority' => $priority,
             'birthday_user_id' => ($birthdayUserId === null || $birthdayUserId === '') ? null : (int)$birthdayUserId,
@@ -670,6 +968,14 @@ try {
             'tags' => json_encode(is_array($body['tags'] ?? null) ? $body['tags'] : []),
             'attachments' => json_encode(is_array($body['attachments'] ?? null) ? $body['attachments'] : []),
             'visible_to_user_ids' => json_encode(is_array($body['visibleToUserIds'] ?? null) ? $body['visibleToUserIds'] : []),
+            'end_time' => ($body['endTime'] ?? null) ?: null,
+            'duration_minutes' => ($body['durationMinutes'] ?? null) === null || ($body['durationMinutes'] ?? '') === '' ? null : (int)$body['durationMinutes'],
+            'recurrence' => ($body['recurrence'] ?? null) ?: null,
+            'meeting_type' => ($body['meetingType'] ?? null) ?: null,
+            'location' => ($body['location'] ?? null) ?: null,
+            'attendee_user_ids' => json_encode(is_array($body['attendeeUserIds'] ?? null) ? $body['attendeeUserIds'] : []),
+            'minutes_keeper_user_id' => ($body['minutesKeeperUserId'] ?? null) ?: null,
+            'series_id' => ($body['seriesId'] ?? null) ?: null,
         ]);
 
         json_response(['success' => true, 'id' => $id], 201);
@@ -679,13 +985,15 @@ try {
         $id = urldecode((string)$matches[1]);
 
         $stmt = $pdo->prepare(
-            'UPDATE events SET title = :title, description = :description, date = :date, category = :category, priority = :priority, birthday_user_id = :birthday_user_id, project_id = :project_id, tags = :tags, attachments = :attachments, visible_to_user_ids = :visible_to_user_ids, updated_at = CURRENT_TIMESTAMP
+            'UPDATE events SET title = :title, description = :description, date = :date, `time` = :time, category = :category, priority = :priority, birthday_user_id = :birthday_user_id, project_id = :project_id, tags = :tags, attachments = :attachments, visible_to_user_ids = :visible_to_user_ids,
+                end_time = :end_time, duration_minutes = :duration_minutes, recurrence = :recurrence, meeting_type = :meeting_type, location = :location, attendee_user_ids = :attendee_user_ids, minutes_keeper_user_id = :minutes_keeper_user_id, series_id = :series_id, updated_at = CURRENT_TIMESTAMP
              WHERE id = :id'
         );
         $stmt->execute([
             'title' => (string)($body['title'] ?? ''),
             'description' => (string)($body['description'] ?? ''),
             'date' => (string)($body['date'] ?? ''),
+            'time' => ($body['time'] ?? null) ?: null,
             'category' => (string)($body['category'] ?? 'Project'),
             'priority' => (string)($body['priority'] ?? 'Low'),
             'birthday_user_id' => (($body['birthdayUserId'] ?? null) === null || ($body['birthdayUserId'] ?? '') === '') ? null : (int)$body['birthdayUserId'],
@@ -693,6 +1001,14 @@ try {
             'tags' => json_encode(is_array($body['tags'] ?? null) ? $body['tags'] : []),
             'attachments' => json_encode(is_array($body['attachments'] ?? null) ? $body['attachments'] : []),
             'visible_to_user_ids' => json_encode(is_array($body['visibleToUserIds'] ?? null) ? $body['visibleToUserIds'] : []),
+            'end_time' => ($body['endTime'] ?? null) ?: null,
+            'duration_minutes' => ($body['durationMinutes'] ?? null) === null || ($body['durationMinutes'] ?? '') === '' ? null : (int)$body['durationMinutes'],
+            'recurrence' => ($body['recurrence'] ?? null) ?: null,
+            'meeting_type' => ($body['meetingType'] ?? null) ?: null,
+            'location' => ($body['location'] ?? null) ?: null,
+            'attendee_user_ids' => json_encode(is_array($body['attendeeUserIds'] ?? null) ? $body['attendeeUserIds'] : []),
+            'minutes_keeper_user_id' => ($body['minutesKeeperUserId'] ?? null) ?: null,
+            'series_id' => ($body['seriesId'] ?? null) ?: null,
             'id' => $id,
         ]);
 
@@ -712,7 +1028,9 @@ try {
         foreach ($rows ?: [] as $row) {
             $tasks[] = [
                 'id' => $row['id'],
-                'projectId' => $row['project_id'],
+                'projectId' => $row['project_id'] ?? '',
+                'sourceLabel' => ($row['source_label'] ?? null) ?: null,
+                'assignedByName' => ($row['assigned_by_name'] ?? null) ?: null,
                 'title' => $row['title'],
                 'description' => $row['description'] ?? '',
                 'assignedToUserIds' => json_field($row['assigned_to_user_ids'] ?? null),
@@ -731,17 +1049,20 @@ try {
         $title = (string)($body['title'] ?? '');
         $dueDate = (string)($body['dueDate'] ?? '');
 
-        if ($id === '' || $projectId === '' || $title === '' || $dueDate === '') {
+        // Хурлаас өгсөн даалгавар төсөлгүй байж болно — projectId заавал шаардахгүй
+        if ($id === '' || $title === '' || $dueDate === '') {
             json_response(['message' => 'Үндсэн талбарыг бөглөнө үү.'], 400);
         }
 
         $stmt = $pdo->prepare(
-            'INSERT INTO tasks (id, project_id, title, description, assigned_to_user_ids, due_date, status, attachments)
-             VALUES (:id, :project_id, :title, :description, :assigned_to_user_ids, :due_date, :status, :attachments)'
+            'INSERT INTO tasks (id, project_id, source_label, assigned_by_name, title, description, assigned_to_user_ids, due_date, status, attachments)
+             VALUES (:id, :project_id, :source_label, :assigned_by_name, :title, :description, :assigned_to_user_ids, :due_date, :status, :attachments)'
         );
         $stmt->execute([
             'id' => $id,
-            'project_id' => $projectId,
+            'project_id' => $projectId !== '' ? $projectId : null,
+            'source_label' => ($body['sourceLabel'] ?? null) ?: null,
+            'assigned_by_name' => ($body['assignedByName'] ?? null) ?: null,
             'title' => $title,
             'description' => (string)($body['description'] ?? ''),
             'assigned_to_user_ids' => json_encode(is_array($body['assignedToUserIds'] ?? null) ? $body['assignedToUserIds'] : []),
@@ -825,6 +1146,7 @@ try {
                 'variance' => $row['variance'] ?? '',
                 'extraNotes' => $row['extra_notes'] ?? '',
                 'visibleToUserIds' => json_field($row['visible_to_user_ids'] ?? null),
+                'editableByUserIds' => json_field($row['editable_by_user_ids'] ?? null),
             ];
         }
         json_response($plans);
@@ -842,10 +1164,10 @@ try {
             'INSERT INTO procurement_plans
                 (id, idx, code, name, type, budget_cost, year_financing, tender_method, tender_month, sustainable, notes,
                  project_name, implement_period, committee_formed, advertised, tender_opened, committee_met, notice_sent,
-                 contract_signed, contract_value, payment1, payment2, payment3, variance, extra_notes, visible_to_user_ids)
+                 contract_signed, contract_value, payment1, payment2, payment3, variance, extra_notes, visible_to_user_ids, editable_by_user_ids)
              VALUES (:id, :idx, :code, :name, :type, :budget_cost, :year_financing, :tender_method, :tender_month, :sustainable, :notes,
                  :project_name, :implement_period, :committee_formed, :advertised, :tender_opened, :committee_met, :notice_sent,
-                 :contract_signed, :contract_value, :payment1, :payment2, :payment3, :variance, :extra_notes, :visible_to_user_ids)'
+                 :contract_signed, :contract_value, :payment1, :payment2, :payment3, :variance, :extra_notes, :visible_to_user_ids, :editable_by_user_ids)'
         );
         $stmt->execute($params);
         json_response(['success' => true, 'id' => $id], 201);
@@ -862,7 +1184,7 @@ try {
                 advertised = :advertised, tender_opened = :tender_opened, committee_met = :committee_met, notice_sent = :notice_sent,
                 contract_signed = :contract_signed, contract_value = :contract_value, payment1 = :payment1, payment2 = :payment2,
                 payment3 = :payment3, variance = :variance, extra_notes = :extra_notes, visible_to_user_ids = :visible_to_user_ids,
-                updated_at = CURRENT_TIMESTAMP
+                editable_by_user_ids = :editable_by_user_ids, updated_at = CURRENT_TIMESTAMP
              WHERE id = :id'
         );
         $stmt->execute($params);
@@ -1033,6 +1355,519 @@ try {
         $stmt = $pdo->prepare('DELETE FROM director_tasks WHERE id = :id');
         $stmt->execute(['id' => $id]);
         json_response(['success' => true]);
+    }
+
+    // ================= Хурлын тэмдэглэл =================
+    $map_minutes = static function (array $row): array {
+        return [
+            'id' => $row['id'],
+            'title' => $row['title'],
+            'date' => to_local_date($row['date']),
+            'time' => ($row['time'] ?? null) ?: null,
+            'attendeeUserIds' => json_field($row['attendee_user_ids'] ?? null),
+            'agenda' => $row['agenda'] ?? '',
+            'decisions' => $row['decisions'] ?? '',
+            'notes' => $row['notes'] ?? '',
+            'attachments' => json_field($row['attachments'] ?? null),
+            'visibleToUserIds' => json_field($row['visible_to_user_ids'] ?? null),
+            'createdBy' => ($row['created_by'] ?? null) ?: null,
+        ];
+    };
+
+    if ($method === 'GET' && $route === '/meeting-minutes') {
+        $rows = $pdo->query('SELECT * FROM meeting_minutes ORDER BY date DESC, created_at DESC')->fetchAll();
+        json_response(array_map($map_minutes, $rows ?: []));
+    }
+
+    if ($method === 'POST' && $route === '/meeting-minutes') {
+        $id = (string)($body['id'] ?? '');
+        $title = trim((string)($body['title'] ?? ''));
+        $date = (string)($body['date'] ?? '');
+        if ($id === '' || $title === '' || $date === '') {
+            json_response(['message' => 'Хурлын нэр болон огноог оруулна уу.'], 400);
+        }
+        $stmt = $pdo->prepare(
+            'INSERT INTO meeting_minutes (id, title, date, `time`, attendee_user_ids, agenda, decisions, notes, attachments, visible_to_user_ids, created_by)
+             VALUES (:id, :title, :date, :time, :attendee_user_ids, :agenda, :decisions, :notes, :attachments, :visible_to_user_ids, :created_by)'
+        );
+        $stmt->execute([
+            'id' => $id,
+            'title' => $title,
+            'date' => $date,
+            'time' => ($body['time'] ?? null) ?: null,
+            'attendee_user_ids' => json_encode(is_array($body['attendeeUserIds'] ?? null) ? $body['attendeeUserIds'] : []),
+            'agenda' => (string)($body['agenda'] ?? ''),
+            'decisions' => (string)($body['decisions'] ?? ''),
+            'notes' => (string)($body['notes'] ?? ''),
+            'attachments' => json_encode(is_array($body['attachments'] ?? null) ? $body['attachments'] : []),
+            'visible_to_user_ids' => json_encode(is_array($body['visibleToUserIds'] ?? null) ? $body['visibleToUserIds'] : []),
+            'created_by' => ($body['createdBy'] ?? null) ?: null,
+        ]);
+        json_response(['success' => true, 'id' => $id], 201);
+    }
+
+    if ($method === 'PUT' && preg_match('#^/meeting-minutes/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $title = trim((string)($body['title'] ?? ''));
+        $date = (string)($body['date'] ?? '');
+        if ($title === '' || $date === '') {
+            json_response(['message' => 'Хурлын нэр болон огноог оруулна уу.'], 400);
+        }
+        $stmt = $pdo->prepare(
+            'UPDATE meeting_minutes SET title = :title, date = :date, `time` = :time, attendee_user_ids = :attendee_user_ids, agenda = :agenda, decisions = :decisions, notes = :notes, attachments = :attachments, visible_to_user_ids = :visible_to_user_ids, updated_at = CURRENT_TIMESTAMP
+             WHERE id = :id'
+        );
+        $stmt->execute([
+            'title' => $title,
+            'date' => $date,
+            'time' => ($body['time'] ?? null) ?: null,
+            'attendee_user_ids' => json_encode(is_array($body['attendeeUserIds'] ?? null) ? $body['attendeeUserIds'] : []),
+            'agenda' => (string)($body['agenda'] ?? ''),
+            'decisions' => (string)($body['decisions'] ?? ''),
+            'notes' => (string)($body['notes'] ?? ''),
+            'attachments' => json_encode(is_array($body['attachments'] ?? null) ? $body['attachments'] : []),
+            'visible_to_user_ids' => json_encode(is_array($body['visibleToUserIds'] ?? null) ? $body['visibleToUserIds'] : []),
+            'id' => $id,
+        ]);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/meeting-minutes/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $stmt = $pdo->prepare('DELETE FROM meeting_minutes WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        json_response(['success' => true]);
+    }
+
+    // ================= Ээлжийн амралт =================
+    $map_leave = static function (array $row): array {
+        return [
+            'id' => $row['id'],
+            'userId' => (string)$row['user_id'],
+            'userName' => $row['user_name'],
+            'startDate' => to_local_date($row['start_date']),
+            'endDate' => to_local_date($row['end_date']),
+            'days' => (int)$row['days'],
+            'reason' => $row['reason'] ?? '',
+            'status' => $row['status'],
+            'year' => (int)$row['year'],
+            'reviewedBy' => ($row['reviewed_by'] ?? null) ?: null,
+            'reviewedByName' => ($row['reviewed_by_name'] ?? null) ?: null,
+            'reviewedAt' => ($row['reviewed_at'] ?? null) ? to_iso($row['reviewed_at']) : null,
+            'createdAt' => to_iso($row['created_at'] ?? ''),
+        ];
+    };
+
+    if ($method === 'GET' && $route === '/leave-requests') {
+        $rows = $pdo->query('SELECT * FROM leave_requests ORDER BY start_date DESC, created_at DESC')->fetchAll();
+        json_response(array_map($map_leave, $rows ?: []));
+    }
+
+    if ($method === 'POST' && $route === '/leave-requests') {
+        $id = (string)($body['id'] ?? '');
+        $userId = (string)($body['userId'] ?? '');
+        $startDate = (string)($body['startDate'] ?? '');
+        $endDate = (string)($body['endDate'] ?? '');
+        if ($id === '' || $userId === '' || $startDate === '' || $endDate === '') {
+            json_response(['message' => 'Амралтын огноог бүрэн оруулна уу.'], 400);
+        }
+        $days = count_working_days($startDate, $endDate);
+        if ($days <= 0) {
+            json_response(['message' => 'Сонгосон хугацаанд ажлын өдөр байхгүй байна. Огноогоо шалгана уу.'], 400);
+        }
+        $year = (int)substr($startDate, 0, 4);
+        $entitlement = leave_entitlement($pdo, $year, $userId);
+        $st = $pdo->prepare("SELECT days FROM leave_requests WHERE user_id = :u AND `year` = :y AND status <> 'Rejected'");
+        $st->execute(['u' => $userId, 'y' => $year]);
+        $existing = $st->fetchAll();
+        $usedDays = 0;
+        foreach ($existing as $r) {
+            $usedDays += (int)$r['days'];
+        }
+        if (count($existing) >= MAX_LEAVE_SPLITS) {
+            json_response(['message' => 'Амралтаа хамгийн ихдээ ' . MAX_LEAVE_SPLITS . ' хэсэг болгон хуваах боломжтой. Та аль хэдийн ' . count($existing) . ' удаа авсан байна.'], 400);
+        }
+        if ($usedDays + $days > $entitlement) {
+            json_response(['message' => 'Үлдсэн амралт ' . max(0, $entitlement - $usedDays) . ' ажлын өдөр байна. ' . $days . ' өдөр авах боломжгүй.'], 400);
+        }
+        $stmt = $pdo->prepare(
+            "INSERT INTO leave_requests (id, user_id, user_name, start_date, end_date, days, reason, status, `year`)
+             VALUES (:id, :user_id, :user_name, :start_date, :end_date, :days, :reason, 'Pending', :year)"
+        );
+        $stmt->execute([
+            'id' => $id,
+            'user_id' => $userId,
+            'user_name' => (string)($body['userName'] ?? ''),
+            'start_date' => $startDate,
+            'end_date' => $endDate,
+            'days' => $days,
+            'reason' => (string)($body['reason'] ?? ''),
+            'year' => $year,
+        ]);
+        $rowStmt = $pdo->prepare('SELECT * FROM leave_requests WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        json_response($map_leave($rowStmt->fetch()), 201);
+    }
+
+    if ($method === 'PATCH' && preg_match('#^/leave-requests/([^/]+)/status$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $status = (string)($body['status'] ?? '');
+        if (!in_array($status, ['Pending', 'Approved', 'Rejected'], true)) {
+            json_response(['message' => 'Төлөв буруу байна.'], 400);
+        }
+        $cur = $pdo->prepare('SELECT * FROM leave_requests WHERE id = :id LIMIT 1');
+        $cur->execute(['id' => $id]);
+        $current = $cur->fetch();
+        if (!$current) {
+            json_response(['message' => 'Амралтын хүсэлт олдсонгүй.'], 404);
+        }
+        if ($status === 'Approved') {
+            $entitlement = leave_entitlement($pdo, (int)$current['year'], (string)$current['user_id']);
+            $ost = $pdo->prepare("SELECT days FROM leave_requests WHERE user_id = :u AND `year` = :y AND status = 'Approved' AND id <> :id");
+            $ost->execute(['u' => $current['user_id'], 'y' => (int)$current['year'], 'id' => $id]);
+            $approvedDays = 0;
+            foreach ($ost->fetchAll() as $r) {
+                $approvedDays += (int)$r['days'];
+            }
+            if ($approvedDays + (int)$current['days'] > $entitlement) {
+                json_response(['message' => 'Батлах боломжгүй: жилийн эрх ' . $entitlement . ' өдөр, батлагдсан ' . $approvedDays . ' өдөр байна.'], 400);
+            }
+        }
+        $stmt = $pdo->prepare('UPDATE leave_requests SET status = :status, reviewed_by = :reviewed_by, reviewed_by_name = :reviewed_by_name, reviewed_at = NOW() WHERE id = :id');
+        $stmt->execute([
+            'status' => $status,
+            'reviewed_by' => ($body['reviewedBy'] ?? null) ?: null,
+            'reviewed_by_name' => ($body['reviewedByName'] ?? null) ?: null,
+            'id' => $id,
+        ]);
+        $rowStmt = $pdo->prepare('SELECT * FROM leave_requests WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        json_response($map_leave($rowStmt->fetch()));
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/leave-requests/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $stmt = $pdo->prepare('DELETE FROM leave_requests WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'GET' && $route === '/leave-settings') {
+        $year = (int)($_GET['year'] ?? date('Y'));
+        json_response(['year' => $year, 'days' => leave_entitlement($pdo, $year)]);
+    }
+
+    if ($method === 'PUT' && preg_match('#^/leave-settings/(\d+)$#', $route, $matches)) {
+        $year = (int)$matches[1];
+        $days = isset($body['days']) ? (int)$body['days'] : -1;
+        if ($year <= 0 || $days < 0 || $days > 365) {
+            json_response(['message' => 'Амралтын хоног буруу байна.'], 400);
+        }
+        $stmt = $pdo->prepare('INSERT INTO leave_settings (`year`, days) VALUES (:y, :d) ON DUPLICATE KEY UPDATE days = VALUES(days)');
+        $stmt->execute(['y' => $year, 'd' => $days]);
+        json_response(['year' => $year, 'days' => $days]);
+    }
+
+    if ($method === 'GET' && $route === '/leave-entitlements') {
+        $year = (int)($_GET['year'] ?? date('Y'));
+        $st = $pdo->prepare('SELECT user_id, days FROM leave_entitlements WHERE `year` = :y');
+        $st->execute(['y' => $year]);
+        $out = [];
+        foreach ($st->fetchAll() as $r) {
+            $out[] = ['userId' => (string)$r['user_id'], 'days' => (int)$r['days']];
+        }
+        json_response($out);
+    }
+
+    if ($method === 'PUT' && preg_match('#^/leave-entitlements/([^/]+)/(\d+)$#', $route, $matches)) {
+        $userId = urldecode((string)$matches[1]);
+        $year = (int)$matches[2];
+        $raw = $body['days'] ?? null;
+        if ($userId === '' || $year <= 0) {
+            json_response(['message' => 'Ажилтан эсвэл он буруу байна.'], 400);
+        }
+        if ($raw === null || $raw === '') {
+            $del = $pdo->prepare('DELETE FROM leave_entitlements WHERE user_id = :u AND `year` = :y');
+            $del->execute(['u' => $userId, 'y' => $year]);
+            json_response(['userId' => $userId, 'year' => $year, 'days' => leave_entitlement($pdo, $year), 'isOverride' => false]);
+        }
+        $days = (int)$raw;
+        if ($days < 0 || $days > 365) {
+            json_response(['message' => 'Амралтын хоног буруу байна.'], 400);
+        }
+        $st = $pdo->prepare('INSERT INTO leave_entitlements (user_id, `year`, days) VALUES (:u, :y, :d) ON DUPLICATE KEY UPDATE days = VALUES(days)');
+        $st->execute(['u' => $userId, 'y' => $year, 'd' => $days]);
+        json_response(['userId' => $userId, 'year' => $year, 'days' => $days, 'isOverride' => true]);
+    }
+
+    // ================= Хурлын дохио (live) =================
+    $map_signal = static function (array $row): array {
+        return [
+            'id' => (int)$row['id'],
+            'meetingId' => ($row['meeting_id'] ?? null) ?: null,
+            'title' => $row['title'],
+            'time' => ($row['meeting_time'] ?? null) ?: null,
+            'startedBy' => ($row['started_by'] ?? null) ?: null,
+            'startedByName' => ($row['started_by_name'] ?? null) ?: null,
+            'startedAt' => to_iso($row['started_at'] ?? ''),
+        ];
+    };
+
+    if ($method === 'GET' && $route === '/meeting-signal') {
+        $rows = $pdo->query('SELECT * FROM meeting_signals WHERE ended_at IS NULL AND started_at >= (NOW() - INTERVAL 3 HOUR) ORDER BY started_at DESC LIMIT 1')->fetchAll();
+        if (!$rows) {
+            json_response(['active' => false, 'signal' => null]);
+        }
+        json_response(['active' => true, 'signal' => $map_signal($rows[0])]);
+    }
+
+    if ($method === 'GET' && $route === '/meeting-signal/history') {
+        $rows = $pdo->query('SELECT meeting_id, title, started_at, ended_at FROM meeting_signals WHERE ended_at IS NOT NULL ORDER BY started_at DESC LIMIT 300')->fetchAll();
+        $out = [];
+        foreach ($rows ?: [] as $r) {
+            $mins = max(0, (int)round((strtotime((string)$r['ended_at']) - strtotime((string)$r['started_at'])) / 60));
+            $out[] = [
+                'meetingId' => ($r['meeting_id'] ?? null) ?: null,
+                'title' => $r['title'],
+                'startedAt' => to_iso($r['started_at']),
+                'endedAt' => to_iso($r['ended_at']),
+                'durationMinutes' => $mins,
+            ];
+        }
+        json_response($out);
+    }
+
+    if ($method === 'POST' && $route === '/meeting-signal') {
+        $title = trim((string)($body['title'] ?? ''));
+        if ($title === '') {
+            json_response(['message' => 'Хурлын нэрийг оруулна уу.'], 400);
+        }
+        $pdo->exec('UPDATE meeting_signals SET ended_at = NOW() WHERE ended_at IS NULL');
+        $stmt = $pdo->prepare('INSERT INTO meeting_signals (meeting_id, title, meeting_time, started_by, started_by_name) VALUES (:meeting_id, :title, :meeting_time, :started_by, :started_by_name)');
+        $stmt->execute([
+            'meeting_id' => ($body['meetingId'] ?? null) ?: null,
+            'title' => $title,
+            'meeting_time' => ($body['time'] ?? null) ?: null,
+            'started_by' => ($body['startedBy'] ?? null) ?: null,
+            'started_by_name' => ($body['startedByName'] ?? null) ?: null,
+        ]);
+        $rows = $pdo->query('SELECT * FROM meeting_signals WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1')->fetchAll();
+        json_response(['active' => true, 'signal' => $map_signal($rows[0])], 201);
+    }
+
+    if ($method === 'POST' && $route === '/meeting-signal/end') {
+        $pdo->exec('UPDATE meeting_signals SET ended_at = NOW() WHERE ended_at IS NULL');
+        json_response(['success' => true]);
+    }
+
+    // ================= Ажилчид хоорондын зурвас =================
+    $map_message = static function (array $row): array {
+        return [
+            'id' => $row['id'],
+            'senderId' => (string)$row['sender_id'],
+            'recipientId' => (string)$row['recipient_id'],
+            'content' => $row['content'] ?? '',
+            'attachments' => json_field($row['attachments'] ?? null),
+            'readAt' => ($row['read_at'] ?? null) ? to_iso($row['read_at']) : null,
+            'createdAt' => to_iso(substr((string)($row['created_at'] ?? ''), 0, 19)),
+        ];
+    };
+
+    if ($method === 'GET' && $route === '/messages/threads') {
+        $userId = trim((string)($_GET['userId'] ?? ''));
+        if ($userId === '') {
+            json_response(['message' => 'Хэрэглэгч тодорхойгүй байна.'], 400);
+        }
+        $st = $pdo->prepare(
+            "SELECT id, sender_id, recipient_id, LEFT(content, 140) AS preview,
+                    (attachments IS NOT NULL AND attachments <> '[]' AND attachments <> '') AS has_attach,
+                    read_at, created_at
+             FROM messages WHERE sender_id = :u OR recipient_id = :u ORDER BY created_at DESC"
+        );
+        $st->execute(['u' => $userId]);
+        $threads = [];
+        foreach ($st->fetchAll() as $row) {
+            $otherId = ((string)$row['sender_id'] === $userId) ? (string)$row['recipient_id'] : (string)$row['sender_id'];
+            if (!isset($threads[$otherId])) {
+                $threads[$otherId] = [
+                    'otherUserId' => $otherId,
+                    'lastMessage' => $row['preview'] ?? '',
+                    'lastAt' => to_iso(substr((string)$row['created_at'], 0, 19)),
+                    'lastSenderId' => (string)$row['sender_id'],
+                    'unreadCount' => 0,
+                    'hasAttachment' => (bool)((int)$row['has_attach']),
+                ];
+            }
+            if ((string)$row['recipient_id'] === $userId && empty($row['read_at'])) {
+                $threads[$otherId]['unreadCount']++;
+            }
+        }
+        json_response(array_values($threads));
+    }
+
+    if ($method === 'GET' && $route === '/messages/thread') {
+        $userId = trim((string)($_GET['userId'] ?? ''));
+        $otherId = trim((string)($_GET['otherId'] ?? ''));
+        if ($userId === '' || $otherId === '') {
+            json_response(['message' => 'Хэрэглэгч тодорхойгүй байна.'], 400);
+        }
+        $st = $pdo->prepare(
+            'SELECT * FROM messages
+             WHERE (sender_id = :u AND recipient_id = :o) OR (sender_id = :o AND recipient_id = :u)
+             ORDER BY created_at ASC'
+        );
+        $st->execute(['u' => $userId, 'o' => $otherId]);
+        json_response(array_map($map_message, $st->fetchAll() ?: []));
+    }
+
+    if ($method === 'POST' && $route === '/messages') {
+        $id = (string)($body['id'] ?? '');
+        $senderId = (string)($body['senderId'] ?? '');
+        $recipientId = (string)($body['recipientId'] ?? '');
+        if ($id === '' || $senderId === '' || $recipientId === '') {
+            json_response(['message' => 'Илгээгч, хүлээн авагчийг заана уу.'], 400);
+        }
+        if ($senderId === $recipientId) {
+            json_response(['message' => 'Өөр рүүгээ зурвас илгээх боломжгүй.'], 400);
+        }
+        $content = (string)($body['content'] ?? '');
+        $attachments = is_array($body['attachments'] ?? null) ? $body['attachments'] : [];
+        if (trim($content) === '' && count($attachments) === 0) {
+            json_response(['message' => 'Хоосон зурвас илгээх боломжгүй.'], 400);
+        }
+        $stmt = $pdo->prepare('INSERT INTO messages (id, sender_id, recipient_id, content, attachments) VALUES (:id, :sender_id, :recipient_id, :content, :attachments)');
+        $stmt->execute([
+            'id' => $id,
+            'sender_id' => $senderId,
+            'recipient_id' => $recipientId,
+            'content' => $content,
+            'attachments' => json_encode($attachments),
+        ]);
+        $rowStmt = $pdo->prepare('SELECT * FROM messages WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        json_response($map_message($rowStmt->fetch()), 201);
+    }
+
+    if ($method === 'POST' && $route === '/messages/read') {
+        $userId = (string)($body['userId'] ?? '');
+        $otherId = (string)($body['otherId'] ?? '');
+        if ($userId === '' || $otherId === '') {
+            json_response(['message' => 'Хэрэглэгч тодорхойгүй байна.'], 400);
+        }
+        $stmt = $pdo->prepare('UPDATE messages SET read_at = NOW() WHERE recipient_id = :u AND sender_id = :o AND read_at IS NULL');
+        $stmt->execute(['u' => $userId, 'o' => $otherId]);
+        json_response(['success' => true]);
+    }
+
+    // ================= Ажилтны хувийн тэмдэглэл =================
+    $map_note = static function (array $row): array {
+        return [
+            'id' => $row['id'],
+            'userId' => (string)$row['user_id'],
+            'meetingId' => ($row['meeting_id'] ?? null) ?: null,
+            'meetingTitle' => $row['meeting_title'],
+            'meetingDate' => ($row['meeting_date'] ?? null) ? to_local_date($row['meeting_date']) : null,
+            'notes' => $row['notes'] ?? '',
+            'directorTasks' => $row['director_tasks'] ?? '',
+            'createdAt' => to_iso($row['created_at'] ?? ''),
+            'updatedAt' => ($row['updated_at'] ?? null) ? to_iso($row['updated_at']) : null,
+        ];
+    };
+
+    if ($method === 'GET' && $route === '/personal-notes') {
+        $userId = trim((string)($_GET['userId'] ?? ''));
+        if ($userId === '') {
+            json_response(['message' => 'Хэрэглэгч тодорхойгүй байна.'], 400);
+        }
+        $st = $pdo->prepare('SELECT * FROM personal_meeting_notes WHERE user_id = :u ORDER BY meeting_date DESC, created_at DESC');
+        $st->execute(['u' => $userId]);
+        json_response(array_map($map_note, $st->fetchAll() ?: []));
+    }
+
+    if ($method === 'POST' && $route === '/personal-notes') {
+        $id = (string)($body['id'] ?? '');
+        $userId = (string)($body['userId'] ?? '');
+        $meetingTitle = trim((string)($body['meetingTitle'] ?? ''));
+        if ($id === '' || $userId === '' || $meetingTitle === '') {
+            json_response(['message' => 'Хурлын нэрийг оруулна уу.'], 400);
+        }
+        $stmt = $pdo->prepare('INSERT INTO personal_meeting_notes (id, user_id, meeting_id, meeting_title, meeting_date, notes, director_tasks) VALUES (:id, :user_id, :meeting_id, :meeting_title, :meeting_date, :notes, :director_tasks)');
+        $stmt->execute([
+            'id' => $id,
+            'user_id' => $userId,
+            'meeting_id' => ($body['meetingId'] ?? null) ?: null,
+            'meeting_title' => $meetingTitle,
+            'meeting_date' => ($body['meetingDate'] ?? null) ?: null,
+            'notes' => (string)($body['notes'] ?? ''),
+            'director_tasks' => (string)($body['directorTasks'] ?? ''),
+        ]);
+        $rowStmt = $pdo->prepare('SELECT * FROM personal_meeting_notes WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        json_response($map_note($rowStmt->fetch()), 201);
+    }
+
+    if ($method === 'PUT' && preg_match('#^/personal-notes/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $userId = (string)($body['userId'] ?? '');
+        if ($userId === '') {
+            json_response(['message' => 'Хэрэглэгч тодорхойгүй байна.'], 400);
+        }
+        $own = $pdo->prepare('SELECT id FROM personal_meeting_notes WHERE id = :id AND user_id = :u LIMIT 1');
+        $own->execute(['id' => $id, 'u' => $userId]);
+        if (!$own->fetch()) {
+            json_response(['message' => 'Энэ тэмдэглэлийг засах эрхгүй байна.'], 403);
+        }
+        $stmt = $pdo->prepare('UPDATE personal_meeting_notes SET meeting_id = :meeting_id, meeting_title = :meeting_title, meeting_date = :meeting_date, notes = :notes, director_tasks = :director_tasks WHERE id = :id AND user_id = :u');
+        $stmt->execute([
+            'meeting_id' => ($body['meetingId'] ?? null) ?: null,
+            'meeting_title' => trim((string)($body['meetingTitle'] ?? '')),
+            'meeting_date' => ($body['meetingDate'] ?? null) ?: null,
+            'notes' => (string)($body['notes'] ?? ''),
+            'director_tasks' => (string)($body['directorTasks'] ?? ''),
+            'id' => $id,
+            'u' => $userId,
+        ]);
+        $rowStmt = $pdo->prepare('SELECT * FROM personal_meeting_notes WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        json_response($map_note($rowStmt->fetch()));
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/personal-notes/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $userId = trim((string)($_GET['userId'] ?? ($body['userId'] ?? '')));
+        if ($userId === '') {
+            json_response(['message' => 'Хэрэглэгч тодорхойгүй байна.'], 400);
+        }
+        $stmt = $pdo->prepare('DELETE FROM personal_meeting_notes WHERE id = :id AND user_id = :u');
+        $stmt->execute(['id' => $id, 'u' => $userId]);
+        if ($stmt->rowCount() === 0) {
+            json_response(['message' => 'Энэ тэмдэглэлийг устгах эрхгүй байна.'], 403);
+        }
+        json_response(['success' => true]);
+    }
+
+    // ================= Онлайн төлөв (presence) =================
+    if (($method === 'POST') && ($route === '/presence/ping' || $route === '/presence/heartbeat')) {
+        $userId = trim((string)($body['userId'] ?? ''));
+        if ($userId === '') {
+            json_response(['message' => 'Хэрэглэгч тодорхойгүй байна.'], 400);
+        }
+        $stmt = $pdo->prepare('INSERT INTO user_presence (user_id, last_seen) VALUES (:u, NOW()) ON DUPLICATE KEY UPDATE last_seen = NOW()');
+        $stmt->execute(['u' => $userId]);
+        json_response(['success' => true]);
+    }
+
+    if ($method === 'GET' && $route === '/presence') {
+        $rows = $pdo->query('SELECT user_id, last_seen, TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS age FROM user_presence')->fetchAll();
+        $out = [];
+        foreach ($rows ?: [] as $r) {
+            $out[] = [
+                'userId' => (string)$r['user_id'],
+                'online' => ((int)$r['age']) < 45,
+                'lastSeen' => to_iso($r['last_seen']),
+            ];
+        }
+        json_response($out);
     }
 
     json_response(['message' => 'Not Found'], 404);
