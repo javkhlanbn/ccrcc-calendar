@@ -16,6 +16,7 @@ import { format, parseISO, startOfDay, isValid } from 'date-fns';
 import { useAppContext } from '../context/AppContext';
 import { Modal } from '../components/ui/Modal';
 import { RichTextEditor, stripHtml } from '../components/ui/RichTextEditor';
+import { useConfirm } from '../components/ui/ConfirmDialog';
 import { MeetingMinutes, EventAttachment, UserProfile, PersonalMeetingNote, MeetingRecurrence, MeetingType } from '../types';
 import { cn } from '../lib/utils';
 import { formatDuration, formatMinutes, useElapsed } from '../utils/duration';
@@ -65,6 +66,7 @@ export const MeetingMinutesPage: React.FC = () => {
     createMeetingSeries,
     assignMeetingTask,
   } = useAppContext();
+  const confirmDialog = useConfirm();
 
   // Явж буй хурал хэр удаж байгаа (секунд тутам шинэчлэгдэнэ)
   const liveElapsed = useElapsed(meetingSignal?.startedAt);
@@ -333,7 +335,10 @@ export const MeetingMinutesPage: React.FC = () => {
 
   const handleStartMeeting = async () => {
     if (!nextMeeting) return;
-    if (!confirm(t('Энэ хурлыг эхлүүлэх үү? Бүх ажилтанд мэдэгдэл очно.', 'Start this meeting? All staff will be notified.'))) return;
+    if (!(await confirmDialog(
+      t('Энэ хурлыг эхлүүлэх үү? Бүх ажилтанд мэдэгдэл очно.', 'Start this meeting? All staff will be notified.'),
+      { confirmLabel: t('Эхлүүлэх', 'Start') }
+    ))) return;
     try {
       await startMeetingSignal({ meetingId: nextMeeting.id, title: nextMeeting.title, time: nextMeeting.time });
     } catch (error: any) {
@@ -421,7 +426,7 @@ export const MeetingMinutesPage: React.FC = () => {
 
   const handleDeleteNote = async () => {
     if (!selectedNote) return;
-    if (!confirm(t('Энэ тэмдэглэлийг устгах уу?', 'Delete this note?'))) return;
+    if (!(await confirmDialog(t('Энэ тэмдэглэлийг устгах уу?', 'Delete this note?')))) return;
     try {
       await deletePersonalNote(selectedNote.id);
       setIsNoteModalOpen(false);
@@ -645,7 +650,7 @@ export const MeetingMinutesPage: React.FC = () => {
 
   const handleDelete = async () => {
     if (!selected) return;
-    if (!confirm(t('Энэ хурлын тэмдэглэлийг устгах уу?', 'Delete this meeting minutes?'))) return;
+    if (!(await confirmDialog(t('Энэ хурлын тэмдэглэлийг устгах уу?', 'Delete this meeting minutes?')))) return;
 
     try {
       await deleteMeetingMinutes(selected.id);

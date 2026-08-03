@@ -16,6 +16,7 @@ import * as XLSX from 'xlsx';
 import { format, parseISO, isValid } from 'date-fns';
 import { useAppContext } from '../context/AppContext';
 import { Modal } from '../components/ui/Modal';
+import { useConfirm } from '../components/ui/ConfirmDialog';
 import { LeaveRequest, LeaveStatus, UserProfile } from '../types';
 import { countWorkingDays, computeLeaveBalance, validateLeaveRequest } from '../utils/leave';
 import { cn } from '../lib/utils';
@@ -34,6 +35,7 @@ export const LeavePage: React.FC = () => {
     profile,
     language,
   } = useAppContext();
+  const confirmDialog = useConfirm();
 
   const isMN = language === 'MN';
   const t = (mn: string, en: string) => (isMN ? mn : en);
@@ -142,7 +144,7 @@ export const LeavePage: React.FC = () => {
   };
 
   const handleDelete = async (request: LeaveRequest) => {
-    if (!confirm(t('Энэ хүсэлтийг устгах уу?', 'Delete this request?'))) return;
+    if (!(await confirmDialog(t('Энэ хүсэлтийг устгах уу?', 'Delete this request?')))) return;
     try {
       await deleteLeaveRequest(request.id);
     } catch (error: any) {

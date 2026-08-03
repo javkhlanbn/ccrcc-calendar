@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Project, Event, Language, Theme, UserProfile, Department, UserStatus, UserRole, UserPermission, Task, TaskStatus, ProcurementPlan, MeetingMinutes, MeetingSignal, MeetingDuration, LeaveRequest, LeaveStatus, DEFAULT_LEAVE_DAYS, PersonalMeetingNote, MeetingRecurrence, MeetingType } from '../types';
+import { Project, Event, Language, Theme, UserProfile, Department, UserStatus, UserRole, UserPermission, Task, TaskStatus, ProcurementPlan, MeetingMinutes, MeetingSignal, MeetingDuration, LeaveRequest, LeaveStatus, DEFAULT_LEAVE_DAYS, PersonalMeetingNote, MeetingRecurrence, MeetingType, Poll, WorkPlan } from '../types';
 import { generateOccurrenceDates } from '../utils/meeting';
 
 export interface NewMeetingInput {
@@ -74,6 +74,19 @@ interface AppContextType {
   deleteLeaveRequest: (id: string) => Promise<void>;
   updateLeaveEntitlement: (year: number, days: number) => Promise<void>;
   updateUserLeaveEntitlement: (userId: string, year: number, days: number | null) => Promise<void>;
+  polls: Poll[];
+  refreshPolls: () => Promise<void>;
+  addPoll: (poll: { question: string; description?: string; options: string[]; allowMultiple: boolean; minChoices?: number | null; maxChoices?: number | null; anonymous: boolean; visibleToUserIds?: string[]; closesAt?: string }) => Promise<void>;
+  votePoll: (pollId: string, optionIds: string[]) => Promise<void>;
+  closePoll: (pollId: string) => Promise<void>;
+  deletePoll: (pollId: string) => Promise<void>;
+  workPlans: WorkPlan[];
+  refreshWorkPlans: () => Promise<void>;
+  canEditWorkPlan: (plan?: WorkPlan) => boolean;
+  addWorkPlan: (plan: Omit<WorkPlan, 'id' | 'createdBy' | 'createdByName' | 'createdAt' | 'updatedAt'>) => Promise<WorkPlan>;
+  updateWorkPlan: (plan: WorkPlan) => Promise<void>;
+  signWorkPlan: (planId: string, role: 'approve' | 'review' | 'compile', revoke?: boolean) => Promise<void>;
+  deleteWorkPlan: (id: string) => Promise<void>;
   unreadMessageCount: number;
   refreshUnreadMessages: () => Promise<void>;
   meetingSignal: MeetingSignal | null;
@@ -119,6 +132,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [storedMeetingSignal, setStoredMeetingSignal] = useState<MeetingSignal | null>(null);
   const [meetingDurations, setMeetingDurations] = useState<MeetingDuration[]>([]);
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [polls, setPolls] = useState<Poll[]>([]);
+  const [storedWorkPlans, setStoredWorkPlans] = useState<WorkPlan[]>([]);
   const [language, setLanguage] = useState<Language>('MN');
   const [theme, setTheme] = useState<Theme>('dark');
 
@@ -194,11 +209,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     )
   );
 
+  // Ажлын төлөвлөгөө: админ бүх төлөвлөгөөг харж, засна.
+  // Ажилтан нь тухайн хүснэгтэд нэрээр эсвэл хэлтсээрээ эрх олгогдсон бол л харна/засна.
+
+  // plan байхгүй = шинээр үүсгэх эрх шалгаж байна (зөвхөн админ үүсгэнэ)
+  const canEditWorkPlan = (plan?: WorkPlan) => {
+    if (!profile || profile.status !== 'approved') return false;
+    if (profile.role === 'admin') return true;
+    if (!plan) return false;
+
+    return (plan.editableByUserIds || []).includes(profile.uid) ||
+      (plan.editableByDepartments || []).includes(profile.department);
+  };
+
+  // Дөрвөн жагсаалт бүгд хоосон бол хүснэгт бүх ажилтанд ил (гэхдээ зөвхөн уншина)
+  const canViewWorkPlan = (plan: WorkPlan) => {
+    if (!profile) return false;
+    if (profile.role === 'admin') return true;
+    if (canEditWorkPlan(plan)) return true;
+
+    const users = plan.visibleToUserIds || [];
+    const depts = plan.visibleToDepartments || [];
+    const editUsers = plan.editableByUserIds || [];
+    const editDepts = plan.editableByDepartments || [];
+    if (users.length === 0 && depts.length === 0 && editUsers.length === 0 && editDepts.length === 0) return true;
+
+    return users.includes(profile.uid) || depts.includes(profile.department);
+  };
+
   const projects = storedProjects.filter(canViewItem);
   const events = storedEvents.filter(canViewItem);
   const tasks = storedTasks.filter(canViewTask);
   const procurementPlans = storedProcurementPlans.filter(canViewProcurement);
   const meetingMinutes = storedMeetingMinutes.filter(canViewMinutesItem);
+  const workPlans = storedWorkPlans.filter(canViewWorkPlan);
   // Админ бүх хүсэлтийг, ажилтан зөвхөн өөрийнхөө хүсэлтийг харна
   const leaveRequests = storedLeaveRequests.filter(r => {
     if (!profile) return false;
@@ -244,7 +288,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const loadProjectsAndEvents = async () => {
       try {
         const currentYear = new Date().getFullYear();
-        const [projectsRes, eventsRes, tasksRes, procurementRes, minutesRes, leaveRes, leaveSettingsRes, leaveEntitlementsRes] = await Promise.all([
+        const [projectsRes, eventsRes, tasksRes, procurementRes, minutesRes, leaveRes, leaveSettingsRes, leaveEntitlementsRes, workPlansRes] = await Promise.all([
           fetch('/api/projects'),
           fetch('/api/events'),
           fetch('/api/tasks'),
@@ -253,6 +297,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           fetch('/api/leave-requests'),
           fetch(`/api/leave-settings?year=${currentYear}`),
           fetch(`/api/leave-entitlements?year=${currentYear}`),
+          fetch('/api/work-plans'),
         ]);
 
         if (projectsRes.ok) {
@@ -295,6 +340,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const map: Record<string, number> = {};
           overrides.forEach(o => { map[o.userId] = Number(o.days); });
           setUserLeaveEntitlements(map);
+        }
+
+        if (workPlansRes.ok) {
+          setStoredWorkPlans((await workPlansRes.json()) as WorkPlan[]);
         }
       } catch (error) {
         console.error('Error loading projects and events:', error);
@@ -478,6 +527,211 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clearInterval(timer);
     };
   }, [user]);
+
+  // ===== Санал асуулга =====
+  const refreshPolls = async () => {
+    if (!profile?.uid) {
+      setPolls([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/polls?userId=${encodeURIComponent(profile.uid)}`);
+      if (!res.ok) return;
+      setPolls((await res.json()) as Poll[]);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    if (!profile?.uid) {
+      setPolls([]);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(`/api/polls?userId=${encodeURIComponent(profile.uid)}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as Poll[];
+        if (!cancelled) setPolls(data);
+      } catch {
+        /* ignore */
+      }
+    };
+    tick();
+    // Бусдын өгсөн санал шинэчлэгдэж харагдахын тулд тогтмол татна
+    const timer = setInterval(tick, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [profile?.uid]);
+
+  const addPoll = async (poll: { question: string; description?: string; options: string[]; allowMultiple: boolean; minChoices?: number | null; maxChoices?: number | null; anonymous: boolean; visibleToUserIds?: string[]; closesAt?: string }) => {
+    // Санал асуулга үүсгэх эрх: зөвхөн админ
+    if (!profile || profile.status !== 'approved' || profile.role !== 'admin') return;
+
+    const res = await fetch('/api/polls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: Math.random().toString(36).slice(2, 11),
+        question: poll.question,
+        description: poll.description || '',
+        options: poll.options.map(text => ({ id: Math.random().toString(36).slice(2, 11), text })),
+        allowMultiple: poll.allowMultiple,
+        minChoices: poll.allowMultiple ? poll.minChoices ?? null : null,
+        maxChoices: poll.allowMultiple ? poll.maxChoices ?? null : null,
+        anonymous: poll.anonymous,
+        visibleToUserIds: poll.visibleToUserIds || [],
+        closesAt: poll.closesAt || null,
+        createdBy: profile.uid,
+        createdByName: profile.displayName,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Санал асуулга үүсгэх үед алдаа гарлаа.'));
+    }
+
+    const created = (await res.json()) as Poll;
+    setPolls(prev => [created, ...prev]);
+  };
+
+  const votePoll = async (pollId: string, optionIds: string[]) => {
+    if (!profile || profile.status !== 'approved') return;
+
+    const res = await fetch(`/api/polls/${pollId}/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: profile.uid, userName: profile.displayName, optionIds }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Санал өгөх үед алдаа гарлаа.'));
+    }
+
+    const updated = (await res.json()) as Poll;
+    setPolls(prev => prev.map(p => (p.id === pollId ? updated : p)));
+  };
+
+  const closePoll = async (pollId: string) => {
+    // Хаах эрх: зөвхөн админ
+    if (!profile || profile.role !== 'admin') return;
+
+    const res = await fetch(`/api/polls/${pollId}/close`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: profile.uid }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Санал асуулга хаах үед алдаа гарлаа.'));
+    }
+
+    const updated = (await res.json()) as Poll;
+    setPolls(prev => prev.map(p => (p.id === pollId ? updated : p)));
+  };
+
+  const deletePoll = async (pollId: string) => {
+    // Устгах эрх: зөвхөн админ
+    if (!profile || profile.role !== 'admin') return;
+
+    const res = await fetch(`/api/polls/${pollId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Санал асуулга устгах үед алдаа гарлаа.'));
+    }
+
+    setPolls(prev => prev.filter(p => p.id !== pollId));
+  };
+
+  // ===== Ажлын төлөвлөгөө =====
+  const refreshWorkPlans = async () => {
+    try {
+      const res = await fetch('/api/work-plans');
+      if (!res.ok) return;
+      setStoredWorkPlans((await res.json()) as WorkPlan[]);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const addWorkPlan = async (plan: Omit<WorkPlan, 'id' | 'createdBy' | 'createdByName' | 'createdAt' | 'updatedAt'>) => {
+    // Төлөвлөгөө үүсгэх эрх: зөвхөн админ
+    if (!profile || profile.role !== 'admin') {
+      throw new Error('Ажлын төлөвлөгөө үүсгэх эрхгүй байна.');
+    }
+
+    const res = await fetch('/api/work-plans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...plan,
+        id: Math.random().toString(36).slice(2, 11),
+        createdBy: profile.uid,
+        createdByName: profile.displayName,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Ажлын төлөвлөгөө үүсгэх үед алдаа гарлаа.'));
+    }
+
+    const created = (await res.json()) as WorkPlan;
+    setStoredWorkPlans(prev => [created, ...prev]);
+    return created;
+  };
+
+  const updateWorkPlan = async (plan: WorkPlan) => {
+    if (!canEditWorkPlan(plan)) {
+      throw new Error('Энэ төлөвлөгөөг засах эрхгүй байна.');
+    }
+
+    const res = await fetch(`/api/work-plans/${plan.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(plan),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Ажлын төлөвлөгөө хадгалах үед алдаа гарлаа.'));
+    }
+
+    const updated = (await res.json()) as WorkPlan;
+    setStoredWorkPlans(prev => prev.map(p => (p.id === plan.id ? updated : p)));
+  };
+
+  // Гарын үсэг зурах — сервер тал нь тухайн үүрэгт нэрлэгдсэн ажилтан мөн эсэхийг шалгана
+  const signWorkPlan = async (planId: string, role: 'approve' | 'review' | 'compile', revoke = false) => {
+    if (!profile || profile.status !== 'approved') return;
+
+    const res = await fetch(`/api/work-plans/${planId}/sign`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: profile.uid, role, revoke }),
+    });
+
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Гарын үсэг зурах үед алдаа гарлаа.'));
+    }
+
+    const updated = (await res.json()) as WorkPlan;
+    setStoredWorkPlans(prev => prev.map(p => (p.id === planId ? updated : p)));
+  };
+
+  const deleteWorkPlan = async (id: string) => {
+    // Устгах эрх: зөвхөн админ
+    if (!profile || profile.role !== 'admin') return;
+
+    const res = await fetch(`/api/work-plans/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      throw new Error(await parseErrorMessage(res, 'Ажлын төлөвлөгөө устгах үед алдаа гарлаа.'));
+    }
+
+    setStoredWorkPlans(prev => prev.filter(p => p.id !== id));
+  };
 
   // ===== Ээлжийн амралт =====
   const addLeaveRequest = async (request: { startDate: string; endDate: string; reason?: string }) => {
@@ -1210,6 +1464,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteLeaveRequest,
         updateLeaveEntitlement,
         updateUserLeaveEntitlement,
+        // Ажилчид сонгогдсон асуулгыг зөвхөн тэдэнд (болон админд) харуулна
+        polls: polls.filter(canViewItem),
+        refreshPolls,
+        addPoll,
+        votePoll,
+        closePoll,
+        deletePoll,
+        // Эрх олгогдсон төлөвлөгөөг л ажилтанд харуулна
+        workPlans,
+        refreshWorkPlans,
+        canEditWorkPlan,
+        addWorkPlan,
+        updateWorkPlan,
+        signWorkPlan,
+        deleteWorkPlan,
         unreadMessageCount,
         refreshUnreadMessages,
         meetingSignal: storedMeetingSignal,

@@ -393,6 +393,95 @@ function db(): PDO
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
 
+    // Санал асуулга — асуулт, сонголтууд (JSON), тохиргоо
+    $pdo->exec("CREATE TABLE IF NOT EXISTS polls (
+        id VARCHAR(36) PRIMARY KEY,
+        question VARCHAR(500) NOT NULL,
+        description TEXT,
+        options LONGTEXT NOT NULL,
+        allow_multiple TINYINT(1) NOT NULL DEFAULT 0,
+        min_choices INT NULL,
+        max_choices INT NULL,
+        anonymous TINYINT(1) NOT NULL DEFAULT 0,
+        visible_to_user_ids LONGTEXT NULL,
+        status ENUM('open','closed') NOT NULL DEFAULT 'open',
+        closes_at DATE NULL,
+        created_by VARCHAR(36) NOT NULL,
+        created_by_name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        closed_at TIMESTAMP NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Өмнө үүссэн polls хүснэгтэд сонголтын хязгаарын баганууд нэмэгдэнэ
+    if (!column_exists($pdo, 'polls', 'min_choices')) {
+        $pdo->exec('ALTER TABLE polls ADD COLUMN min_choices INT NULL AFTER allow_multiple');
+    }
+    if (!column_exists($pdo, 'polls', 'max_choices')) {
+        $pdo->exec('ALTER TABLE polls ADD COLUMN max_choices INT NULL AFTER min_choices');
+    }
+    // Оролцох ажилчдын хязгаарлалт (хоосон/NULL = бүгдэд нээлттэй)
+    if (!column_exists($pdo, 'polls', 'visible_to_user_ids')) {
+        $pdo->exec('ALTER TABLE polls ADD COLUMN visible_to_user_ids LONGTEXT NULL AFTER anonymous');
+    }
+
+    // Санал асуулгын саналууд — нэг хүн нэг асуулгад нэг л удаа (дахин өгвөл сольж бичнэ)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS poll_votes (
+        poll_id VARCHAR(36) NOT NULL,
+        user_id VARCHAR(36) NOT NULL,
+        user_name VARCHAR(255) NOT NULL,
+        option_ids LONGTEXT NOT NULL,
+        voted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (poll_id, user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Ажлын төлөвлөгөө — жилийн/хагас жилийн/сарын/7 хоногийн хүснэгт, хэлтэс тус бүрээр.
+    // Багана (columns_json) болон мөр (rows_json) нь чөлөөтэй нэмэгддэг тул JSON-оор хадгална.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS work_plans (
+        id VARCHAR(36) PRIMARY KEY,
+        title VARCHAR(500) NOT NULL,
+        period_type ENUM('year','halfyear','month','week') NOT NULL DEFAULT 'month',
+        plan_year INT NOT NULL,
+        period_no INT NULL,
+        start_date DATE NULL,
+        end_date DATE NULL,
+        department VARCHAR(255) NOT NULL,
+        columns_json LONGTEXT NOT NULL,
+        rows_json LONGTEXT NOT NULL,
+        approved_by_title VARCHAR(500) NULL,
+        approved_by_user_id VARCHAR(36) NULL,
+        approved_by_name VARCHAR(255) NULL,
+        approved_at TIMESTAMP NULL,
+        reviewed_by_title VARCHAR(500) NULL,
+        reviewed_by_user_id VARCHAR(36) NULL,
+        reviewed_by_name VARCHAR(255) NULL,
+        reviewed_at TIMESTAMP NULL,
+        compiled_by_user_id VARCHAR(36) NULL,
+        compiled_by_name VARCHAR(255) NULL,
+        compiled_at TIMESTAMP NULL,
+        visible_to_user_ids LONGTEXT NULL,
+        editable_by_user_ids LONGTEXT NULL,
+        visible_to_departments LONGTEXT NULL,
+        editable_by_departments LONGTEXT NULL,
+        created_by VARCHAR(36) NOT NULL,
+        created_by_name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Гарын үсгийг бүртгэлтэй ажилтнаар сонгож баталгаажуулах баганууд (хуучин хүснэгтэд нэмэгдэнэ)
+    foreach ([
+        'approved_by_user_id' => 'VARCHAR(36) NULL',
+        'approved_at' => 'TIMESTAMP NULL',
+        'reviewed_by_user_id' => 'VARCHAR(36) NULL',
+        'reviewed_at' => 'TIMESTAMP NULL',
+        'compiled_by_user_id' => 'VARCHAR(36) NULL',
+        'compiled_at' => 'TIMESTAMP NULL',
+    ] as $column => $definition) {
+        if (!column_exists($pdo, 'work_plans', $column)) {
+            $pdo->exec("ALTER TABLE work_plans ADD COLUMN {$column} {$definition}");
+        }
+    }
+
     $stmt = $pdo->prepare('SELECT id FROM users WHERE username = :username LIMIT 1');
     $stmt->execute(['username' => $adminUsername]);
     $admin = $stmt->fetch();
@@ -1843,6 +1932,485 @@ try {
         if ($stmt->rowCount() === 0) {
             json_response(['message' => 'Энэ тэмдэглэлийг устгах эрхгүй байна.'], 403);
         }
+        json_response(['success' => true]);
+    }
+
+    // ================= Санал асуулга =================
+    // Дуусах хугацаа нь өнгөрсөн нээлттэй асуулгуудыг автоматаар хаана
+    $auto_close_polls = static function (PDO $pdo): void {
+        $pdo->exec("UPDATE polls SET status = 'closed', closed_at = NOW() WHERE status = 'open' AND closes_at IS NOT NULL AND closes_at < CURDATE()");
+    };
+
+    // Асуулга + саналуудыг нэгтгэж клиентэд өгөх хэлбэрт хөрвүүлнэ.
+    // Нууц асуулгад санал өгсөн хүмүүсийн нэрийг задлахгүй (зөвхөн тоо).
+    $map_poll = static function (array $row, array $votes, string $viewerId): array {
+        $options = json_decode((string)($row['options'] ?? '[]'), true);
+        $options = is_array($options) ? array_values(array_filter($options, static fn ($o) => is_array($o) && !empty($o['id']))) : [];
+        $anonymous = (bool)(int)($row['anonymous'] ?? 0);
+
+        $results = [];
+        foreach ($options as $o) {
+            $results[(string)$o['id']] = ['count' => 0, 'voters' => []];
+        }
+
+        $myOptionIds = [];
+        foreach ($votes as $vote) {
+            $ids = json_decode((string)($vote['option_ids'] ?? '[]'), true);
+            $ids = is_array($ids) ? array_map('strval', $ids) : [];
+            if ($viewerId !== '' && (string)$vote['user_id'] === $viewerId) {
+                $myOptionIds = $ids;
+            }
+            foreach ($ids as $optionId) {
+                if (!isset($results[$optionId])) {
+                    continue;
+                }
+                $results[$optionId]['count'] += 1;
+                if (!$anonymous) {
+                    $results[$optionId]['voters'][] = (string)($vote['user_name'] ?? '');
+                }
+            }
+        }
+
+        $resultList = [];
+        foreach ($options as $o) {
+            $oid = (string)$o['id'];
+            $resultList[] = ['optionId' => $oid, 'count' => $results[$oid]['count'], 'voters' => $results[$oid]['voters']];
+        }
+
+        return [
+            'id' => $row['id'],
+            'question' => $row['question'],
+            'description' => $row['description'] ?? '',
+            'options' => $options,
+            'allowMultiple' => (bool)(int)($row['allow_multiple'] ?? 0),
+            'minChoices' => ($row['min_choices'] ?? null) !== null ? (int)$row['min_choices'] : null,
+            'maxChoices' => ($row['max_choices'] ?? null) !== null ? (int)$row['max_choices'] : null,
+            'anonymous' => $anonymous,
+            'visibleToUserIds' => array_map('strval', json_field($row['visible_to_user_ids'] ?? null)),
+            'status' => $row['status'],
+            'closesAt' => ($row['closes_at'] ?? null) ? to_local_date($row['closes_at']) : null,
+            'createdBy' => (string)$row['created_by'],
+            'createdByName' => $row['created_by_name'] ?? '',
+            'createdAt' => to_iso($row['created_at'] ?? ''),
+            'totalVotes' => count($votes),
+            'results' => $resultList,
+            'myOptionIds' => $myOptionIds,
+        ];
+    };
+
+    if ($method === 'GET' && $route === '/polls') {
+        $auto_close_polls($pdo);
+        $viewerId = trim((string)($_GET['userId'] ?? ''));
+        $pollRows = $pdo->query("SELECT * FROM polls ORDER BY status = 'open' DESC, created_at DESC")->fetchAll();
+        $voteRows = $pdo->query('SELECT * FROM poll_votes')->fetchAll();
+        $votesByPoll = [];
+        foreach ($voteRows ?: [] as $vote) {
+            $votesByPoll[(string)$vote['poll_id']][] = $vote;
+        }
+        $out = [];
+        foreach ($pollRows ?: [] as $row) {
+            $out[] = $map_poll($row, $votesByPoll[(string)$row['id']] ?? [], $viewerId);
+        }
+        json_response($out);
+    }
+
+    if ($method === 'POST' && $route === '/polls') {
+        $id = (string)($body['id'] ?? '');
+        $question = trim((string)($body['question'] ?? ''));
+        $createdBy = (string)($body['createdBy'] ?? '');
+        $rawOptions = is_array($body['options'] ?? null) ? $body['options'] : [];
+        $cleanOptions = [];
+        foreach ($rawOptions as $o) {
+            $oid = (string)($o['id'] ?? '');
+            $text = trim((string)($o['text'] ?? ''));
+            if ($oid !== '' && $text !== '') {
+                $cleanOptions[] = ['id' => $oid, 'text' => $text];
+            }
+        }
+        if ($id === '' || $question === '' || $createdBy === '') {
+            json_response(['message' => 'Асуултаа оруулна уу.'], 400);
+        }
+        if (count($cleanOptions) < 2) {
+            json_response(['message' => 'Дор хаяж 2 сонголт оруулна уу.'], 400);
+        }
+
+        // Сонголтын хязгаар — зөвхөн олон сонголттой үед хүчинтэй
+        $allowMultiple = !empty($body['allowMultiple']);
+        $min = null;
+        $max = null;
+        if ($allowMultiple) {
+            $optionCount = count($cleanOptions);
+            $rawMin = $body['minChoices'] ?? null;
+            $rawMax = $body['maxChoices'] ?? null;
+            $min = ($rawMin === null || $rawMin === '') ? null : (int)$rawMin;
+            $max = ($rawMax === null || $rawMax === '') ? null : (int)$rawMax;
+            if ($min !== null && ($min < 1 || $min > $optionCount)) {
+                json_response(['message' => 'Доод хязгаар 1-ээс сонголтын тооны хооронд байх ёстой.'], 400);
+            }
+            if ($max !== null && ($max < 1 || $max > $optionCount)) {
+                json_response(['message' => 'Дээд хязгаар 1-ээс сонголтын тооны хооронд байх ёстой.'], 400);
+            }
+            if ($min !== null && $max !== null && $min > $max) {
+                json_response(['message' => 'Доод хязгаар дээд хязгаараас их байж болохгүй.'], 400);
+            }
+        }
+
+        $visibleTo = is_array($body['visibleToUserIds'] ?? null) ? array_values(array_map('strval', $body['visibleToUserIds'])) : [];
+        $stmt = $pdo->prepare(
+            "INSERT INTO polls (id, question, description, options, allow_multiple, min_choices, max_choices, anonymous, visible_to_user_ids, status, closes_at, created_by, created_by_name)
+             VALUES (:id, :question, :description, :options, :allow_multiple, :min_choices, :max_choices, :anonymous, :visible_to_user_ids, 'open', :closes_at, :created_by, :created_by_name)"
+        );
+        $stmt->execute([
+            'id' => $id,
+            'question' => $question,
+            'description' => (string)($body['description'] ?? ''),
+            'options' => json_encode($cleanOptions, JSON_UNESCAPED_UNICODE),
+            'allow_multiple' => $allowMultiple ? 1 : 0,
+            'min_choices' => $min,
+            'max_choices' => $max,
+            'anonymous' => !empty($body['anonymous']) ? 1 : 0,
+            'visible_to_user_ids' => json_encode($visibleTo, JSON_UNESCAPED_UNICODE),
+            'closes_at' => ($body['closesAt'] ?? null) ?: null,
+            'created_by' => $createdBy,
+            'created_by_name' => (string)($body['createdByName'] ?? ''),
+        ]);
+        $rowStmt = $pdo->prepare('SELECT * FROM polls WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        json_response($map_poll($rowStmt->fetch(), [], $createdBy), 201);
+    }
+
+    if ($method === 'POST' && preg_match('#^/polls/([^/]+)/vote$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $userId = (string)($body['userId'] ?? '');
+        $ids = is_array($body['optionIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['optionIds']))) : [];
+        if ($userId === '' || count($ids) === 0) {
+            json_response(['message' => 'Сонголтоо хийнэ үү.'], 400);
+        }
+        $auto_close_polls($pdo);
+        $cur = $pdo->prepare('SELECT * FROM polls WHERE id = :id LIMIT 1');
+        $cur->execute(['id' => $id]);
+        $poll = $cur->fetch();
+        if (!$poll) {
+            json_response(['message' => 'Санал асуулга олдсонгүй.'], 404);
+        }
+        if ($poll['status'] !== 'open') {
+            json_response(['message' => 'Санал асуулга хаагдсан байна.'], 400);
+        }
+        $options = json_decode((string)$poll['options'], true) ?: [];
+        $validIds = [];
+        foreach ($options as $o) {
+            $validIds[(string)($o['id'] ?? '')] = true;
+        }
+        foreach ($ids as $optionId) {
+            if (!isset($validIds[$optionId])) {
+                json_response(['message' => 'Сонголт буруу байна.'], 400);
+            }
+        }
+        if (!(int)$poll['allow_multiple'] && count($ids) > 1) {
+            json_response(['message' => 'Энэ асуулгад зөвхөн нэг сонголт хийх боломжтой.'], 400);
+        }
+        // Олон сонголттой үед доод/дээд хязгаарыг шалгана
+        if ((int)$poll['allow_multiple']) {
+            $min = ($poll['min_choices'] ?? null) !== null ? (int)$poll['min_choices'] : null;
+            $max = ($poll['max_choices'] ?? null) !== null ? (int)$poll['max_choices'] : null;
+            if ($min !== null && count($ids) < $min) {
+                json_response(['message' => 'Дор хаяж ' . $min . ' сонголт хийнэ үү.'], 400);
+            }
+            if ($max !== null && count($ids) > $max) {
+                json_response(['message' => 'Хамгийн ихдээ ' . $max . ' сонголт хийх боломжтой.'], 400);
+            }
+        }
+        // Өмнө нь санал өгсөн бол шинэчилнэ (саналаа өөрчлөх боломж)
+        $stmt = $pdo->prepare(
+            'INSERT INTO poll_votes (poll_id, user_id, user_name, option_ids)
+             VALUES (:poll_id, :user_id, :user_name, :option_ids)
+             ON DUPLICATE KEY UPDATE user_name = VALUES(user_name), option_ids = VALUES(option_ids)'
+        );
+        $stmt->execute([
+            'poll_id' => $id,
+            'user_id' => $userId,
+            'user_name' => (string)($body['userName'] ?? ''),
+            'option_ids' => json_encode($ids, JSON_UNESCAPED_UNICODE),
+        ]);
+        $vt = $pdo->prepare('SELECT * FROM poll_votes WHERE poll_id = :id');
+        $vt->execute(['id' => $id]);
+        json_response($map_poll($poll, $vt->fetchAll() ?: [], $userId));
+    }
+
+    if ($method === 'PATCH' && preg_match('#^/polls/([^/]+)/close$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $viewerId = (string)($body['userId'] ?? '');
+        $stmt = $pdo->prepare("UPDATE polls SET status = 'closed', closed_at = NOW() WHERE id = :id");
+        $stmt->execute(['id' => $id]);
+        $cur = $pdo->prepare('SELECT * FROM polls WHERE id = :id LIMIT 1');
+        $cur->execute(['id' => $id]);
+        $poll = $cur->fetch();
+        if (!$poll) {
+            json_response(['message' => 'Санал асуулга олдсонгүй.'], 404);
+        }
+        $vt = $pdo->prepare('SELECT * FROM poll_votes WHERE poll_id = :id');
+        $vt->execute(['id' => $id]);
+        json_response($map_poll($poll, $vt->fetchAll() ?: [], $viewerId));
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/polls/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $pdo->prepare('DELETE FROM poll_votes WHERE poll_id = :id')->execute(['id' => $id]);
+        $pdo->prepare('DELETE FROM polls WHERE id = :id')->execute(['id' => $id]);
+        json_response(['success' => true]);
+    }
+
+    // ================= Ажлын төлөвлөгөө =================
+    $map_work_plan = static function (array $row): array {
+        // Багана нь заавал id + нэртэй, мөрийн нүд нь баганын id-гаар түлхүүрлэгдэнэ
+        $columns = json_decode((string)($row['columns_json'] ?? '[]'), true);
+        $columns = is_array($columns) ? $columns : [];
+        $cleanColumns = [];
+        foreach ($columns as $c) {
+            if (!is_array($c) || ($c['id'] ?? '') === '') {
+                continue;
+            }
+            $col = ['id' => (string)$c['id'], 'label' => (string)($c['label'] ?? '')];
+            if (($c['width'] ?? null) !== null) {
+                $col['width'] = (int)$c['width'];
+            }
+            $cleanColumns[] = $col;
+        }
+
+        $rows = json_decode((string)($row['rows_json'] ?? '[]'), true);
+        $rows = is_array($rows) ? $rows : [];
+        $cleanRows = [];
+        foreach ($rows as $r) {
+            if (!is_array($r) || ($r['id'] ?? '') === '') {
+                continue;
+            }
+            $cells = [];
+            if (isset($r['cells']) && is_array($r['cells'])) {
+                foreach ($r['cells'] as $key => $value) {
+                    $cells[(string)$key] = (string)($value ?? '');
+                }
+            }
+            $cleanRows[] = ['id' => (string)$r['id'], 'cells' => (object)$cells];
+        }
+
+        return [
+            'id' => $row['id'],
+            'title' => $row['title'],
+            'periodType' => $row['period_type'],
+            'year' => (int)$row['plan_year'],
+            'periodNo' => ($row['period_no'] ?? null) !== null ? (int)$row['period_no'] : null,
+            'startDate' => ($row['start_date'] ?? null) ? to_local_date($row['start_date']) : null,
+            'endDate' => ($row['end_date'] ?? null) ? to_local_date($row['end_date']) : null,
+            'department' => $row['department'],
+            'columns' => $cleanColumns,
+            'rows' => $cleanRows,
+            'approvedByTitle' => $row['approved_by_title'] ?? '',
+            'approvedByUserId' => (string)($row['approved_by_user_id'] ?? ''),
+            'approvedByName' => $row['approved_by_name'] ?? '',
+            'approvedAt' => ($row['approved_at'] ?? null) ? to_iso($row['approved_at']) : null,
+            'reviewedByTitle' => $row['reviewed_by_title'] ?? '',
+            'reviewedByUserId' => (string)($row['reviewed_by_user_id'] ?? ''),
+            'reviewedByName' => $row['reviewed_by_name'] ?? '',
+            'reviewedAt' => ($row['reviewed_at'] ?? null) ? to_iso($row['reviewed_at']) : null,
+            'compiledByUserId' => (string)($row['compiled_by_user_id'] ?? ''),
+            'compiledByName' => $row['compiled_by_name'] ?? '',
+            'compiledAt' => ($row['compiled_at'] ?? null) ? to_iso($row['compiled_at']) : null,
+            'visibleToUserIds' => array_map('strval', json_field($row['visible_to_user_ids'] ?? null)),
+            'editableByUserIds' => array_map('strval', json_field($row['editable_by_user_ids'] ?? null)),
+            'visibleToDepartments' => array_map('strval', json_field($row['visible_to_departments'] ?? null)),
+            'editableByDepartments' => array_map('strval', json_field($row['editable_by_departments'] ?? null)),
+            'createdBy' => (string)$row['created_by'],
+            'createdByName' => $row['created_by_name'] ?? '',
+            'createdAt' => to_iso($row['created_at'] ?? ''),
+            'updatedAt' => to_iso($row['updated_at'] ?? ($row['created_at'] ?? '')),
+        ];
+    };
+
+    // Хүсэлтийн биеийг DB баганад тохируулж, багана/мөрийг цэвэрлэнэ
+    $work_plan_payload = static function (array $body): array {
+        $rawColumns = is_array($body['columns'] ?? null) ? $body['columns'] : [];
+        $columns = [];
+        $columnIds = [];
+        foreach ($rawColumns as $c) {
+            $cid = (string)($c['id'] ?? '');
+            if ($cid === '') {
+                continue;
+            }
+            $col = ['id' => $cid, 'label' => trim((string)($c['label'] ?? ''))];
+            if (($c['width'] ?? null) !== null) {
+                $col['width'] = (int)$c['width'];
+            }
+            $columns[] = $col;
+            $columnIds[$cid] = true;
+        }
+
+        $rawRows = is_array($body['rows'] ?? null) ? $body['rows'] : [];
+        $rows = [];
+        foreach ($rawRows as $r) {
+            $rid = (string)($r['id'] ?? '');
+            if ($rid === '') {
+                continue;
+            }
+            $cells = [];
+            if (isset($r['cells']) && is_array($r['cells'])) {
+                // Устгагдсан баганын үлдэгдэл утгыг хадгалахгүй
+                foreach ($r['cells'] as $key => $value) {
+                    if (isset($columnIds[(string)$key])) {
+                        $cells[(string)$key] = (string)($value ?? '');
+                    }
+                }
+            }
+            $rows[] = ['id' => $rid, 'cells' => (object)$cells];
+        }
+
+        $periodType = (string)($body['periodType'] ?? 'month');
+        if (!in_array($periodType, ['year', 'halfyear', 'month', 'week'], true)) {
+            $periodType = 'month';
+        }
+        $periodNo = $body['periodNo'] ?? null;
+
+        return [
+            'title' => trim((string)($body['title'] ?? '')),
+            'period_type' => $periodType,
+            'plan_year' => (int)($body['year'] ?? date('Y')),
+            'period_no' => ($periodNo === null || $periodNo === '') ? null : (int)$periodNo,
+            'start_date' => ($body['startDate'] ?? null) ?: null,
+            'end_date' => ($body['endDate'] ?? null) ?: null,
+            'department' => (string)($body['department'] ?? ''),
+            'columns_json' => json_encode($columns, JSON_UNESCAPED_UNICODE),
+            'rows_json' => json_encode($rows, JSON_UNESCAPED_UNICODE),
+            'approved_by_title' => (string)($body['approvedByTitle'] ?? ''),
+            'approved_by_user_id' => ((string)($body['approvedByUserId'] ?? '')) ?: null,
+            'approved_by_name' => (string)($body['approvedByName'] ?? ''),
+            'reviewed_by_title' => (string)($body['reviewedByTitle'] ?? ''),
+            'reviewed_by_user_id' => ((string)($body['reviewedByUserId'] ?? '')) ?: null,
+            'reviewed_by_name' => (string)($body['reviewedByName'] ?? ''),
+            'compiled_by_user_id' => ((string)($body['compiledByUserId'] ?? '')) ?: null,
+            'compiled_by_name' => (string)($body['compiledByName'] ?? ''),
+            'visible_to_user_ids' => json_encode(is_array($body['visibleToUserIds'] ?? null) ? array_values(array_map('strval', $body['visibleToUserIds'])) : [], JSON_UNESCAPED_UNICODE),
+            'editable_by_user_ids' => json_encode(is_array($body['editableByUserIds'] ?? null) ? array_values(array_map('strval', $body['editableByUserIds'])) : [], JSON_UNESCAPED_UNICODE),
+            'visible_to_departments' => json_encode(is_array($body['visibleToDepartments'] ?? null) ? array_values(array_map('strval', $body['visibleToDepartments'])) : [], JSON_UNESCAPED_UNICODE),
+            'editable_by_departments' => json_encode(is_array($body['editableByDepartments'] ?? null) ? array_values(array_map('strval', $body['editableByDepartments'])) : [], JSON_UNESCAPED_UNICODE),
+        ];
+    };
+
+    if ($method === 'GET' && $route === '/work-plans') {
+        $rows = $pdo->query('SELECT * FROM work_plans ORDER BY plan_year DESC, period_no DESC, created_at DESC')->fetchAll();
+        $out = [];
+        foreach ($rows ?: [] as $row) {
+            $out[] = $map_work_plan($row);
+        }
+        json_response($out);
+    }
+
+    if ($method === 'POST' && $route === '/work-plans') {
+        $id = (string)($body['id'] ?? '');
+        $createdBy = (string)($body['createdBy'] ?? '');
+        $payload = $work_plan_payload($body);
+        if ($id === '' || $payload['title'] === '' || $payload['department'] === '' || $createdBy === '') {
+            json_response(['message' => 'Гарчиг болон хэлтсээ сонгоно уу.'], 400);
+        }
+
+        $stmt = $pdo->prepare(
+            'INSERT INTO work_plans
+                (id, title, period_type, plan_year, period_no, start_date, end_date, department, columns_json, rows_json,
+                 approved_by_title, approved_by_user_id, approved_by_name, reviewed_by_title, reviewed_by_user_id,
+                 reviewed_by_name, compiled_by_user_id, compiled_by_name,
+                 visible_to_user_ids, editable_by_user_ids, visible_to_departments, editable_by_departments,
+                 created_by, created_by_name)
+             VALUES (:id, :title, :period_type, :plan_year, :period_no, :start_date, :end_date, :department, :columns_json, :rows_json,
+                 :approved_by_title, :approved_by_user_id, :approved_by_name, :reviewed_by_title, :reviewed_by_user_id,
+                 :reviewed_by_name, :compiled_by_user_id, :compiled_by_name,
+                 :visible_to_user_ids, :editable_by_user_ids, :visible_to_departments, :editable_by_departments,
+                 :created_by, :created_by_name)'
+        );
+        $stmt->execute($payload + [
+            'id' => $id,
+            'created_by' => $createdBy,
+            'created_by_name' => (string)($body['createdByName'] ?? ''),
+        ]);
+
+        $rowStmt = $pdo->prepare('SELECT * FROM work_plans WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        json_response($map_work_plan($rowStmt->fetch()), 201);
+    }
+
+    if ($method === 'PUT' && preg_match('#^/work-plans/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $payload = $work_plan_payload($body);
+        if ($payload['title'] === '' || $payload['department'] === '') {
+            json_response(['message' => 'Гарчиг болон хэлтсээ сонгоно уу.'], 400);
+        }
+
+        // Гарын үсэг зурах хүн солигдвол тухайн баталгаажуулалт хүчингүй болно.
+        // (*_at нь *_by_user_id-аас ӨМНӨ олгогдож байгаа тул хуучин утгатай харьцуулагдана)
+        $stmt = $pdo->prepare(
+            'UPDATE work_plans SET
+                title = :title, period_type = :period_type, plan_year = :plan_year, period_no = :period_no,
+                start_date = :start_date, end_date = :end_date, department = :department,
+                columns_json = :columns_json, rows_json = :rows_json,
+                approved_by_title = :approved_by_title,
+                approved_at = IF(approved_by_user_id <=> :approved_cmp, approved_at, NULL),
+                approved_by_user_id = :approved_by_user_id, approved_by_name = :approved_by_name,
+                reviewed_by_title = :reviewed_by_title,
+                reviewed_at = IF(reviewed_by_user_id <=> :reviewed_cmp, reviewed_at, NULL),
+                reviewed_by_user_id = :reviewed_by_user_id, reviewed_by_name = :reviewed_by_name,
+                compiled_at = IF(compiled_by_user_id <=> :compiled_cmp, compiled_at, NULL),
+                compiled_by_user_id = :compiled_by_user_id, compiled_by_name = :compiled_by_name,
+                visible_to_user_ids = :visible_to_user_ids,
+                editable_by_user_ids = :editable_by_user_ids, visible_to_departments = :visible_to_departments,
+                editable_by_departments = :editable_by_departments
+             WHERE id = :id'
+        );
+        $stmt->execute($payload + [
+            'id' => $id,
+            'approved_cmp' => $payload['approved_by_user_id'],
+            'reviewed_cmp' => $payload['reviewed_by_user_id'],
+            'compiled_cmp' => $payload['compiled_by_user_id'],
+        ]);
+
+        $rowStmt = $pdo->prepare('SELECT * FROM work_plans WHERE id = :id LIMIT 1');
+        $rowStmt->execute(['id' => $id]);
+        $updated = $rowStmt->fetch();
+        if (!$updated) {
+            json_response(['message' => 'Ажлын төлөвлөгөө олдсонгүй.'], 404);
+        }
+        json_response($map_work_plan($updated));
+    }
+
+    // Гарын үсэг зурах: зөвхөн тухайн үүрэгт нэрлэгдсэн ажилтан өөрөө баталгаажуулна
+    if ($method === 'PATCH' && preg_match('#^/work-plans/([^/]+)/sign$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $userId = (string)($body['userId'] ?? '');
+        $role = (string)($body['role'] ?? '');
+        $roleColumns = [
+            'approve' => ['user' => 'approved_by_user_id', 'at' => 'approved_at'],
+            'review' => ['user' => 'reviewed_by_user_id', 'at' => 'reviewed_at'],
+            'compile' => ['user' => 'compiled_by_user_id', 'at' => 'compiled_at'],
+        ];
+        if (!isset($roleColumns[$role]) || $userId === '') {
+            json_response(['message' => 'Гарын үсгийн үүрэг тодорхойгүй байна.'], 400);
+        }
+
+        $cur = $pdo->prepare('SELECT * FROM work_plans WHERE id = :id LIMIT 1');
+        $cur->execute(['id' => $id]);
+        $plan = $cur->fetch();
+        if (!$plan) {
+            json_response(['message' => 'Ажлын төлөвлөгөө олдсонгүй.'], 404);
+        }
+        if ((string)($plan[$roleColumns[$role]['user']] ?? '') !== $userId) {
+            json_response(['message' => 'Танд энэ хэсэгт гарын үсэг зурах эрхгүй байна.'], 403);
+        }
+
+        $value = !empty($body['revoke']) ? 'NULL' : 'NOW()';
+        $pdo->prepare("UPDATE work_plans SET {$roleColumns[$role]['at']} = {$value} WHERE id = :id")->execute(['id' => $id]);
+        $cur->execute(['id' => $id]);
+        json_response($map_work_plan($cur->fetch()));
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/work-plans/([^/]+)$#', $route, $matches)) {
+        $id = urldecode((string)$matches[1]);
+        $pdo->prepare('DELETE FROM work_plans WHERE id = :id')->execute(['id' => $id]);
         json_response(['success' => true]);
     }
 

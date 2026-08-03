@@ -307,6 +307,89 @@ async function initDatabase() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
+  // Санал асуулга — асуулт, сонголтууд (JSON), тохиргоо
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS polls (
+      id VARCHAR(36) PRIMARY KEY,
+      question VARCHAR(500) NOT NULL,
+      description TEXT,
+      options LONGTEXT NOT NULL,
+      allow_multiple TINYINT(1) NOT NULL DEFAULT 0,
+      min_choices INT NULL,
+      max_choices INT NULL,
+      anonymous TINYINT(1) NOT NULL DEFAULT 0,
+      visible_to_user_ids LONGTEXT NULL,
+      status ENUM('open','closed') NOT NULL DEFAULT 'open',
+      closes_at DATE NULL,
+      created_by VARCHAR(36) NOT NULL,
+      created_by_name VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      closed_at TIMESTAMP NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // Өмнө үүссэн polls хүснэгтэд сонголтын хязгаарын баганууд нэмэгдэнэ
+  await pool.query("ALTER TABLE polls ADD COLUMN IF NOT EXISTS min_choices INT NULL AFTER allow_multiple");
+  await pool.query("ALTER TABLE polls ADD COLUMN IF NOT EXISTS max_choices INT NULL AFTER min_choices");
+  // Оролцох ажилчдын хязгаарлалт (хоосон/NULL = бүгдэд нээлттэй)
+  await pool.query("ALTER TABLE polls ADD COLUMN IF NOT EXISTS visible_to_user_ids LONGTEXT NULL AFTER anonymous");
+
+  // Санал асуулгын саналууд — нэг хүн нэг асуулгад нэг л удаа (дахин өгвөл сольж бичнэ)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS poll_votes (
+      poll_id VARCHAR(36) NOT NULL,
+      user_id VARCHAR(36) NOT NULL,
+      user_name VARCHAR(255) NOT NULL,
+      option_ids LONGTEXT NOT NULL,
+      voted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (poll_id, user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // Ажлын төлөвлөгөө — жилийн/хагас жилийн/сарын/7 хоногийн хүснэгт, хэлтэс тус бүрээр.
+  // Багана (columns_json) болон мөр (rows_json) нь чөлөөтэй нэмэгддэг тул JSON-оор хадгална.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS work_plans (
+      id VARCHAR(36) PRIMARY KEY,
+      title VARCHAR(500) NOT NULL,
+      period_type ENUM('year','halfyear','month','week') NOT NULL DEFAULT 'month',
+      plan_year INT NOT NULL,
+      period_no INT NULL,
+      start_date DATE NULL,
+      end_date DATE NULL,
+      department VARCHAR(255) NOT NULL,
+      columns_json LONGTEXT NOT NULL,
+      rows_json LONGTEXT NOT NULL,
+      approved_by_title VARCHAR(500) NULL,
+      approved_by_user_id VARCHAR(36) NULL,
+      approved_by_name VARCHAR(255) NULL,
+      approved_at TIMESTAMP NULL,
+      reviewed_by_title VARCHAR(500) NULL,
+      reviewed_by_user_id VARCHAR(36) NULL,
+      reviewed_by_name VARCHAR(255) NULL,
+      reviewed_at TIMESTAMP NULL,
+      compiled_by_user_id VARCHAR(36) NULL,
+      compiled_by_name VARCHAR(255) NULL,
+      compiled_at TIMESTAMP NULL,
+      visible_to_user_ids LONGTEXT NULL,
+      editable_by_user_ids LONGTEXT NULL,
+      visible_to_departments LONGTEXT NULL,
+      editable_by_departments LONGTEXT NULL,
+      created_by VARCHAR(36) NOT NULL,
+      created_by_name VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // Гарын үсгийг бүртгэлтэй ажилтнаар сонгож баталгаажуулах баганууд (хуучин хүснэгтэд нэмэгдэнэ)
+  await pool.query("ALTER TABLE work_plans ADD COLUMN IF NOT EXISTS approved_by_user_id VARCHAR(36) NULL AFTER approved_by_title");
+  await pool.query("ALTER TABLE work_plans ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP NULL AFTER approved_by_name");
+  await pool.query("ALTER TABLE work_plans ADD COLUMN IF NOT EXISTS reviewed_by_user_id VARCHAR(36) NULL AFTER reviewed_by_title");
+  await pool.query("ALTER TABLE work_plans ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP NULL AFTER reviewed_by_name");
+  await pool.query("ALTER TABLE work_plans ADD COLUMN IF NOT EXISTS compiled_by_user_id VARCHAR(36) NULL AFTER reviewed_at");
+  await pool.query("ALTER TABLE work_plans ADD COLUMN IF NOT EXISTS compiled_at TIMESTAMP NULL AFTER compiled_by_name");
+
   // Seed the procurement plan with the 2026 data from the Excel file (only when empty).
   const [procCountRows] = await pool.query<any[]>("SELECT COUNT(*) AS count FROM procurement_plans");
   if (!Array.isArray(procCountRows) || Number(procCountRows[0]?.count || 0) === 0) {
@@ -1697,6 +1780,489 @@ async function startServer() {
     startedAt: new Date(row.started_at).toISOString(),
   });
 
+  // ================= Санал асуулга =================
+  // Дуусах хугацаа нь өнгөрсөн нээлттэй асуулгуудыг автоматаар хаана
+  const autoClosePolls = async () => {
+    await pool.query(
+      "UPDATE polls SET status = 'closed', closed_at = NOW() WHERE status = 'open' AND closes_at IS NOT NULL AND closes_at < CURDATE()"
+    );
+  };
+
+  // Асуулга + саналуудыг нэгтгэж клиентэд өгөх хэлбэрт хөрвүүлнэ.
+  // Нууц асуулгад санал өгсөн хүмүүсийн нэрийг задлахгүй (зөвхөн тоо).
+  const mapPollRow = (row: any, votes: any[], viewerId: string) => {
+    const options = (JSON.parse(row.options || "[]") as { id: string; text: string }[]).filter(o => o && o.id);
+    const anonymous = !!Number(row.anonymous);
+    const results = new Map<string, { count: number; voters: string[] }>();
+    options.forEach(o => results.set(o.id, { count: 0, voters: [] }));
+
+    let myOptionIds: string[] = [];
+    for (const vote of votes) {
+      let ids: string[] = [];
+      try {
+        ids = JSON.parse(vote.option_ids || "[]");
+      } catch {
+        ids = [];
+      }
+      if (viewerId && String(vote.user_id) === viewerId) myOptionIds = ids;
+      for (const optionId of ids) {
+        const entry = results.get(optionId);
+        if (!entry) continue;
+        entry.count += 1;
+        if (!anonymous) entry.voters.push(String(vote.user_name || ""));
+      }
+    }
+
+    return {
+      id: row.id,
+      question: row.question,
+      description: row.description || "",
+      options,
+      allowMultiple: !!Number(row.allow_multiple),
+      minChoices: row.min_choices != null ? Number(row.min_choices) : null,
+      maxChoices: row.max_choices != null ? Number(row.max_choices) : null,
+      anonymous,
+      visibleToUserIds: (() => {
+        try {
+          const parsed = JSON.parse(row.visible_to_user_ids || "[]");
+          return Array.isArray(parsed) ? parsed.map(String) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      status: row.status,
+      closesAt: row.closes_at ? formatLocalDate(row.closes_at) : undefined,
+      createdBy: String(row.created_by),
+      createdByName: row.created_by_name || "",
+      createdAt: new Date(row.created_at).toISOString(),
+      totalVotes: votes.length,
+      results: options.map(o => ({ optionId: o.id, ...results.get(o.id)! })),
+      myOptionIds,
+    };
+  };
+
+  app.get("/api/polls", async (req, res) => {
+    try {
+      await autoClosePolls();
+      const viewerId = String(req.query.userId || "");
+      const [pollRows] = await pool.query<any[]>("SELECT * FROM polls ORDER BY status = 'open' DESC, created_at DESC");
+      const [voteRows] = await pool.query<any[]>("SELECT * FROM poll_votes");
+      const votesByPoll = new Map<string, any[]>();
+      for (const vote of voteRows || []) {
+        const list = votesByPoll.get(vote.poll_id) || [];
+        list.push(vote);
+        votesByPoll.set(vote.poll_id, list);
+      }
+      return res.json((pollRows || []).map(row => mapPollRow(row, votesByPoll.get(row.id) || [], viewerId)));
+    } catch (error) {
+      console.error("Fetch polls error:", error);
+      return res.status(500).json({ message: "Санал асуулга авах үед алдаа гарлаа." });
+    }
+  });
+
+  app.post("/api/polls", async (req, res) => {
+    try {
+      const { id, question, description, options, allowMultiple, minChoices, maxChoices, anonymous, visibleToUserIds, closesAt, createdBy, createdByName } = req.body || {};
+      const cleanOptions = (Array.isArray(options) ? options : [])
+        .map((o: any) => ({ id: String(o?.id || ""), text: String(o?.text || "").trim() }))
+        .filter(o => o.id && o.text);
+
+      if (!id || !String(question || "").trim() || !createdBy) {
+        return res.status(400).json({ message: "Асуултаа оруулна уу." });
+      }
+      if (cleanOptions.length < 2) {
+        return res.status(400).json({ message: "Дор хаяж 2 сонголт оруулна уу." });
+      }
+
+      // Сонголтын хязгаар — зөвхөн олон сонголттой үед хүчинтэй
+      let min: number | null = null;
+      let max: number | null = null;
+      if (allowMultiple) {
+        min = minChoices != null && minChoices !== "" ? Number(minChoices) : null;
+        max = maxChoices != null && maxChoices !== "" ? Number(maxChoices) : null;
+        if (min != null && (!Number.isInteger(min) || min < 1 || min > cleanOptions.length)) {
+          return res.status(400).json({ message: "Доод хязгаар 1-ээс сонголтын тооны хооронд байх ёстой." });
+        }
+        if (max != null && (!Number.isInteger(max) || max < 1 || max > cleanOptions.length)) {
+          return res.status(400).json({ message: "Дээд хязгаар 1-ээс сонголтын тооны хооронд байх ёстой." });
+        }
+        if (min != null && max != null && min > max) {
+          return res.status(400).json({ message: "Доод хязгаар дээд хязгаараас их байж болохгүй." });
+        }
+      }
+
+      await pool.query(
+        `INSERT INTO polls (id, question, description, options, allow_multiple, min_choices, max_choices, anonymous, visible_to_user_ids, status, closes_at, created_by, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+        [
+          id,
+          String(question).trim(),
+          String(description || ""),
+          JSON.stringify(cleanOptions),
+          allowMultiple ? 1 : 0,
+          min,
+          max,
+          anonymous ? 1 : 0,
+          JSON.stringify((Array.isArray(visibleToUserIds) ? visibleToUserIds : []).map(String)),
+          closesAt || null,
+          String(createdBy),
+          String(createdByName || ""),
+        ]
+      );
+
+      const [created] = await pool.query<any[]>("SELECT * FROM polls WHERE id = ? LIMIT 1", [id]);
+      return res.status(201).json(mapPollRow(created[0], [], String(createdBy)));
+    } catch (error) {
+      console.error("Create poll error:", error);
+      return res.status(500).json({ message: "Санал асуулга үүсгэх үед алдаа гарлаа." });
+    }
+  });
+
+  app.post("/api/polls/:id/vote", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { userId, userName, optionIds } = req.body || {};
+      const ids = (Array.isArray(optionIds) ? optionIds : []).map(String).filter(Boolean);
+      if (!userId || ids.length === 0) {
+        return res.status(400).json({ message: "Сонголтоо хийнэ үү." });
+      }
+
+      await autoClosePolls();
+      const [rows] = await pool.query<any[]>("SELECT * FROM polls WHERE id = ? LIMIT 1", [id]);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(404).json({ message: "Санал асуулга олдсонгүй." });
+      }
+      const poll = rows[0];
+      if (poll.status !== "open") {
+        return res.status(400).json({ message: "Санал асуулга хаагдсан байна." });
+      }
+
+      const validIds = new Set((JSON.parse(poll.options || "[]") as { id: string }[]).map(o => o.id));
+      if (ids.some(optionId => !validIds.has(optionId))) {
+        return res.status(400).json({ message: "Сонголт буруу байна." });
+      }
+      if (!Number(poll.allow_multiple) && ids.length > 1) {
+        return res.status(400).json({ message: "Энэ асуулгад зөвхөн нэг сонголт хийх боломжтой." });
+      }
+
+      // Олон сонголттой үед доод/дээд хязгаарыг шалгана
+      if (Number(poll.allow_multiple)) {
+        const min = poll.min_choices != null ? Number(poll.min_choices) : null;
+        const max = poll.max_choices != null ? Number(poll.max_choices) : null;
+        if (min != null && ids.length < min) {
+          return res.status(400).json({ message: `Дор хаяж ${min} сонголт хийнэ үү.` });
+        }
+        if (max != null && ids.length > max) {
+          return res.status(400).json({ message: `Хамгийн ихдээ ${max} сонголт хийх боломжтой.` });
+        }
+      }
+
+      // Өмнө нь санал өгсөн бол шинэчилнэ (саналаа өөрчлөх боломж)
+      await pool.query(
+        `INSERT INTO poll_votes (poll_id, user_id, user_name, option_ids)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE user_name = VALUES(user_name), option_ids = VALUES(option_ids)`,
+        [id, String(userId), String(userName || ""), JSON.stringify(ids)]
+      );
+
+      const [votes] = await pool.query<any[]>("SELECT * FROM poll_votes WHERE poll_id = ?", [id]);
+      return res.json(mapPollRow(poll, votes || [], String(userId)));
+    } catch (error) {
+      console.error("Vote poll error:", error);
+      return res.status(500).json({ message: "Санал өгөх үед алдаа гарлаа." });
+    }
+  });
+
+  app.patch("/api/polls/:id/close", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const viewerId = String(req.body?.userId || "");
+      await pool.query("UPDATE polls SET status = 'closed', closed_at = NOW() WHERE id = ?", [id]);
+      const [rows] = await pool.query<any[]>("SELECT * FROM polls WHERE id = ? LIMIT 1", [id]);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(404).json({ message: "Санал асуулга олдсонгүй." });
+      }
+      const [votes] = await pool.query<any[]>("SELECT * FROM poll_votes WHERE poll_id = ?", [id]);
+      return res.json(mapPollRow(rows[0], votes || [], viewerId));
+    } catch (error) {
+      console.error("Close poll error:", error);
+      return res.status(500).json({ message: "Санал асуулга хаах үед алдаа гарлаа." });
+    }
+  });
+
+  app.delete("/api/polls/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      await pool.query("DELETE FROM poll_votes WHERE poll_id = ?", [id]);
+      await pool.query("DELETE FROM polls WHERE id = ?", [id]);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("Delete poll error:", error);
+      return res.status(500).json({ message: "Санал асуулга устгах үед алдаа гарлаа." });
+    }
+  });
+
+  // ================= Ажлын төлөвлөгөө =================
+  const parseIdList = (value: any): string[] => {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // Гарын үсгийн цагийг хадгалагдсан хэлбэрээр нь (серверийн ханын цаг) буцаана.
+  // PHP API-тай ижил зан төлөвтэй болгож, огноо цагийн бүсийн зөрүүгээр гулсахаас сэргийлнэ.
+  const formatLocalDateTime = (value: any) => {
+    const d = new Date(value);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+
+  const mapWorkPlanRow = (row: any) => {
+    // Багана нь заавал id + нэртэй байна, мөрийн нүд нь баганын id-гаар түлхүүрлэгдэнэ
+    let columns: { id: string; label: string; width?: number }[] = [];
+    let rows: { id: string; cells: Record<string, string> }[] = [];
+    try {
+      const parsed = JSON.parse(row.columns_json || "[]");
+      if (Array.isArray(parsed)) {
+        columns = parsed
+          .filter((c: any) => c && c.id)
+          .map((c: any) => ({ id: String(c.id), label: String(c.label || ""), width: c.width != null ? Number(c.width) : undefined }));
+      }
+    } catch {
+      columns = [];
+    }
+    try {
+      const parsed = JSON.parse(row.rows_json || "[]");
+      if (Array.isArray(parsed)) {
+        rows = parsed
+          .filter((r: any) => r && r.id)
+          .map((r: any) => ({
+            id: String(r.id),
+            cells: r.cells && typeof r.cells === "object" ? Object.fromEntries(Object.entries(r.cells).map(([k, v]) => [k, String(v ?? "")])) : {},
+          }));
+      }
+    } catch {
+      rows = [];
+    }
+
+    return {
+      id: row.id,
+      title: row.title,
+      periodType: row.period_type,
+      year: Number(row.plan_year),
+      periodNo: row.period_no != null ? Number(row.period_no) : null,
+      startDate: row.start_date ? formatLocalDate(row.start_date) : undefined,
+      endDate: row.end_date ? formatLocalDate(row.end_date) : undefined,
+      department: row.department,
+      columns,
+      rows,
+      approvedByTitle: row.approved_by_title || "",
+      approvedByUserId: row.approved_by_user_id ? String(row.approved_by_user_id) : "",
+      approvedByName: row.approved_by_name || "",
+      approvedAt: row.approved_at ? formatLocalDateTime(row.approved_at) : undefined,
+      reviewedByTitle: row.reviewed_by_title || "",
+      reviewedByUserId: row.reviewed_by_user_id ? String(row.reviewed_by_user_id) : "",
+      reviewedByName: row.reviewed_by_name || "",
+      reviewedAt: row.reviewed_at ? formatLocalDateTime(row.reviewed_at) : undefined,
+      compiledByUserId: row.compiled_by_user_id ? String(row.compiled_by_user_id) : "",
+      compiledByName: row.compiled_by_name || "",
+      compiledAt: row.compiled_at ? formatLocalDateTime(row.compiled_at) : undefined,
+      visibleToUserIds: parseIdList(row.visible_to_user_ids),
+      editableByUserIds: parseIdList(row.editable_by_user_ids),
+      visibleToDepartments: parseIdList(row.visible_to_departments),
+      editableByDepartments: parseIdList(row.editable_by_departments),
+      createdBy: String(row.created_by),
+      createdByName: row.created_by_name || "",
+      createdAt: new Date(row.created_at).toISOString(),
+      updatedAt: new Date(row.updated_at || row.created_at).toISOString(),
+    };
+  };
+
+  // Хүсэлтийн биеийг DB баганад тохируулж, багана/мөрийг цэвэрлэнэ
+  const workPlanPayload = (body: any) => {
+    const columns = (Array.isArray(body?.columns) ? body.columns : [])
+      .map((c: any) => ({ id: String(c?.id || ""), label: String(c?.label || "").trim(), width: c?.width != null ? Number(c.width) : undefined }))
+      .filter((c: any) => c.id);
+    const columnIds = new Set(columns.map((c: any) => c.id));
+    const rows = (Array.isArray(body?.rows) ? body.rows : [])
+      .map((r: any) => {
+        const cells: Record<string, string> = {};
+        if (r?.cells && typeof r.cells === "object") {
+          // Устгагдсан баганын үлдэгдэл утгыг хадгалахгүй
+          for (const [key, value] of Object.entries(r.cells)) {
+            if (columnIds.has(key)) cells[key] = String(value ?? "");
+          }
+        }
+        return { id: String(r?.id || ""), cells };
+      })
+      .filter((r: any) => r.id);
+
+    return {
+      title: String(body?.title || "").trim(),
+      period_type: ["year", "halfyear", "month", "week"].includes(body?.periodType) ? body.periodType : "month",
+      plan_year: Number(body?.year) || new Date().getFullYear(),
+      period_no: body?.periodNo != null && body.periodNo !== "" ? Number(body.periodNo) : null,
+      start_date: body?.startDate || null,
+      end_date: body?.endDate || null,
+      department: String(body?.department || ""),
+      columns_json: JSON.stringify(columns),
+      rows_json: JSON.stringify(rows),
+      approved_by_title: String(body?.approvedByTitle || ""),
+      approved_by_user_id: String(body?.approvedByUserId || "") || null,
+      approved_by_name: String(body?.approvedByName || ""),
+      reviewed_by_title: String(body?.reviewedByTitle || ""),
+      reviewed_by_user_id: String(body?.reviewedByUserId || "") || null,
+      reviewed_by_name: String(body?.reviewedByName || ""),
+      compiled_by_user_id: String(body?.compiledByUserId || "") || null,
+      compiled_by_name: String(body?.compiledByName || ""),
+      visible_to_user_ids: JSON.stringify((Array.isArray(body?.visibleToUserIds) ? body.visibleToUserIds : []).map(String)),
+      editable_by_user_ids: JSON.stringify((Array.isArray(body?.editableByUserIds) ? body.editableByUserIds : []).map(String)),
+      visible_to_departments: JSON.stringify((Array.isArray(body?.visibleToDepartments) ? body.visibleToDepartments : []).map(String)),
+      editable_by_departments: JSON.stringify((Array.isArray(body?.editableByDepartments) ? body.editableByDepartments : []).map(String)),
+    };
+  };
+
+  app.get("/api/work-plans", async (_req, res) => {
+    try {
+      const [rows] = await pool.query<any[]>(
+        "SELECT * FROM work_plans ORDER BY plan_year DESC, period_no DESC, created_at DESC"
+      );
+      return res.json((rows || []).map(mapWorkPlanRow));
+    } catch (error) {
+      console.error("Fetch work plans error:", error);
+      return res.status(500).json({ message: "Ажлын төлөвлөгөө авах үед алдаа гарлаа." });
+    }
+  });
+
+  app.post("/api/work-plans", async (req, res) => {
+    try {
+      const { id, createdBy, createdByName } = req.body || {};
+      const payload = workPlanPayload(req.body);
+      if (!id || !payload.title || !payload.department || !createdBy) {
+        return res.status(400).json({ message: "Гарчиг болон хэлтсээ сонгоно уу." });
+      }
+
+      await pool.query(
+        `INSERT INTO work_plans
+          (id, title, period_type, plan_year, period_no, start_date, end_date, department, columns_json, rows_json,
+           approved_by_title, approved_by_user_id, approved_by_name, reviewed_by_title, reviewed_by_user_id,
+           reviewed_by_name, compiled_by_user_id, compiled_by_name,
+           visible_to_user_ids, editable_by_user_ids, visible_to_departments, editable_by_departments,
+           created_by, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, payload.title, payload.period_type, payload.plan_year, payload.period_no, payload.start_date, payload.end_date,
+          payload.department, payload.columns_json, payload.rows_json,
+          payload.approved_by_title, payload.approved_by_user_id, payload.approved_by_name,
+          payload.reviewed_by_title, payload.reviewed_by_user_id, payload.reviewed_by_name,
+          payload.compiled_by_user_id, payload.compiled_by_name,
+          payload.visible_to_user_ids, payload.editable_by_user_ids,
+          payload.visible_to_departments, payload.editable_by_departments,
+          String(createdBy), String(createdByName || ""),
+        ]
+      );
+
+      const [created] = await pool.query<any[]>("SELECT * FROM work_plans WHERE id = ? LIMIT 1", [id]);
+      return res.status(201).json(mapWorkPlanRow(created[0]));
+    } catch (error) {
+      console.error("Create work plan error:", error);
+      return res.status(500).json({ message: "Ажлын төлөвлөгөө үүсгэх үед алдаа гарлаа." });
+    }
+  });
+
+  app.put("/api/work-plans/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const payload = workPlanPayload(req.body);
+      if (!payload.title || !payload.department) {
+        return res.status(400).json({ message: "Гарчиг болон хэлтсээ сонгоно уу." });
+      }
+
+      const [result] = await pool.query<any>(
+        // Гарын үсэг зурах хүн солигдвол тухайн баталгаажуулалт хүчингүй болно.
+        // (*_at нь *_by_user_id-аас ӨМНӨ олгогдож байгаа тул хуучин утгатай харьцуулагдана)
+        `UPDATE work_plans SET
+           title = ?, period_type = ?, plan_year = ?, period_no = ?, start_date = ?, end_date = ?, department = ?,
+           columns_json = ?, rows_json = ?,
+           approved_by_title = ?,
+           approved_at = IF(approved_by_user_id <=> ?, approved_at, NULL),
+           approved_by_user_id = ?, approved_by_name = ?,
+           reviewed_by_title = ?,
+           reviewed_at = IF(reviewed_by_user_id <=> ?, reviewed_at, NULL),
+           reviewed_by_user_id = ?, reviewed_by_name = ?,
+           compiled_at = IF(compiled_by_user_id <=> ?, compiled_at, NULL),
+           compiled_by_user_id = ?, compiled_by_name = ?,
+           visible_to_user_ids = ?, editable_by_user_ids = ?,
+           visible_to_departments = ?, editable_by_departments = ?
+         WHERE id = ?`,
+        [
+          payload.title, payload.period_type, payload.plan_year, payload.period_no, payload.start_date, payload.end_date,
+          payload.department, payload.columns_json, payload.rows_json,
+          payload.approved_by_title, payload.approved_by_user_id, payload.approved_by_user_id, payload.approved_by_name,
+          payload.reviewed_by_title, payload.reviewed_by_user_id, payload.reviewed_by_user_id, payload.reviewed_by_name,
+          payload.compiled_by_user_id, payload.compiled_by_user_id, payload.compiled_by_name,
+          payload.visible_to_user_ids, payload.editable_by_user_ids,
+          payload.visible_to_departments, payload.editable_by_departments, id,
+        ]
+      );
+
+      if (!result || result.affectedRows === 0) {
+        return res.status(404).json({ message: "Ажлын төлөвлөгөө олдсонгүй." });
+      }
+
+      const [updated] = await pool.query<any[]>("SELECT * FROM work_plans WHERE id = ? LIMIT 1", [id]);
+      return res.json(mapWorkPlanRow(updated[0]));
+    } catch (error) {
+      console.error("Update work plan error:", error);
+      return res.status(500).json({ message: "Ажлын төлөвлөгөө хадгалах үед алдаа гарлаа." });
+    }
+  });
+
+  // Гарын үсэг зурах: зөвхөн тухайн үүрэгт нэрлэгдсэн ажилтан өөрөө баталгаажуулна
+  app.patch("/api/work-plans/:id/sign", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { userId, role, revoke } = req.body || {};
+      const roleColumns: Record<string, { user: string; at: string }> = {
+        approve: { user: "approved_by_user_id", at: "approved_at" },
+        review: { user: "reviewed_by_user_id", at: "reviewed_at" },
+        compile: { user: "compiled_by_user_id", at: "compiled_at" },
+      };
+      const columns = roleColumns[String(role || "")];
+      if (!columns || !userId) {
+        return res.status(400).json({ message: "Гарын үсгийн үүрэг тодорхойгүй байна." });
+      }
+
+      const [rows] = await pool.query<any[]>("SELECT * FROM work_plans WHERE id = ? LIMIT 1", [id]);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(404).json({ message: "Ажлын төлөвлөгөө олдсонгүй." });
+      }
+      if (String(rows[0][columns.user] || "") !== String(userId)) {
+        return res.status(403).json({ message: "Танд энэ хэсэгт гарын үсэг зурах эрхгүй байна." });
+      }
+
+      await pool.query(`UPDATE work_plans SET ${columns.at} = ${revoke ? "NULL" : "NOW()"} WHERE id = ?`, [id]);
+      const [updated] = await pool.query<any[]>("SELECT * FROM work_plans WHERE id = ? LIMIT 1", [id]);
+      return res.json(mapWorkPlanRow(updated[0]));
+    } catch (error) {
+      console.error("Sign work plan error:", error);
+      return res.status(500).json({ message: "Гарын үсэг зурах үед алдаа гарлаа." });
+    }
+  });
+
+  app.delete("/api/work-plans/:id", async (req, res) => {
+    try {
+      await pool.query("DELETE FROM work_plans WHERE id = ?", [req.params.id]);
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("Delete work plan error:", error);
+      return res.status(500).json({ message: "Ажлын төлөвлөгөө устгах үед алдаа гарлаа." });
+    }
+  });
+
   app.get("/api/meeting-signal", async (_req, res) => {
     try {
       // Active = not ended and started within the last 3 hours (auto-expires so it can't flash forever).
@@ -1779,6 +2345,10 @@ async function startServer() {
     }
     return next(err);
   });
+
+  // Тодорхойгүй /api зам — Vite-ийн proxy (/api → 3000) өөр лүүгээ эргэж
+  // төгсгөлгүй давталт үүсгэхээс сэргийлж энд шууд 404 буцаана.
+  app.use("/api", (_req, res) => res.status(404).json({ message: "Not Found" }));
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

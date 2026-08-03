@@ -18,6 +18,7 @@ import { useAppContext } from '../context/AppContext';
 import { Department, UserProfile, UserStatus, UserRole, UserPermission } from '../types';
 import { format } from 'date-fns';
 import { Modal } from '../components/ui/Modal';
+import { useConfirm } from '../components/ui/ConfirmDialog';
 import { cn } from '../lib/utils';
 
 const departments: Department[] = [
@@ -29,6 +30,7 @@ const departments: Department[] = [
 
 const AdminUsers: React.FC = () => {
   const { language, updateUserStatus, updateManagedUser, createManagedUser, deleteManagedUser, profile } = useAppContext();
+  const confirmDialog = useConfirm();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -236,7 +238,7 @@ const AdminUsers: React.FC = () => {
     const confirmMsg = language === 'MN'
       ? `"${selectedUser.displayName}" хэрэглэгчийг устгах уу? Энэ үйлдлийг буцаах боломжгүй.`
       : `Delete user "${selectedUser.displayName}"? This action cannot be undone.`;
-    if (!confirm(confirmMsg)) return;
+    if (!(await confirmDialog(confirmMsg))) return;
 
     try {
       setIsSaving(true);

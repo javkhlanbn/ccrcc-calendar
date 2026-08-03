@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { useAppContext } from '../context/AppContext';
 import { ProcurementPlan as ProcurementPlanType, UserProfile } from '../types';
 import { Modal } from '../components/ui/Modal';
+import { useConfirm } from '../components/ui/ConfirmDialog';
 import { cn } from '../lib/utils';
 
 type ColKey = keyof Omit<ProcurementPlanType, 'id' | 'visibleToUserIds' | 'editableByUserIds'>;
@@ -172,6 +173,7 @@ export const ProcurementPlan: React.FC = () => {
     canEditProcurement,
     canAccessProcurement,
   } = useAppContext();
+  const confirmDialog = useConfirm();
   const isMN = language === 'MN';
   // canManage = шинэ бичлэг үүсгэх эрх. Мөр тус бүрийн засах эрхийг canEditProcurement(plan) шийднэ.
   const canManage = canEditProcurement();
@@ -373,7 +375,7 @@ export const ProcurementPlan: React.FC = () => {
 
   const handleDelete = async () => {
     if (!selected || !canEditProcurement(selected)) return;
-    if (!confirm(t('Энэ мэдээллийг устгах уу?', 'Delete this record?'))) return;
+    if (!(await confirmDialog(t('Энэ мэдээллийг устгах уу?', 'Delete this record?')))) return;
     try {
       await deleteProcurementPlan(selected.id);
       setIsModalOpen(false);

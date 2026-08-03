@@ -31,11 +31,13 @@ import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
+import { useConfirm } from '../components/ui/ConfirmDialog';
 import { Event, EventAttachment, EventCategory, UserProfile, Task } from '../types';
 import { cn } from '../lib/utils';
 
 export const Calendar: React.FC = () => {
   const { events, tasks, language, addEvent, updateEvent, deleteEvent, profile } = useAppContext();
+  const confirmDialog = useConfirm();
   const t = translations[language];
   const isAdmin = profile?.role === 'admin';
   // Хурлыг ЗӨВХӨН "Хурал" цэснээс нэмнэ — хуанли дээр хурал үүсгэхийг больсон.
@@ -286,6 +288,10 @@ export const Calendar: React.FC = () => {
     if (!canManageEvents) return;
 
     if (!selectedEvent) return;
+
+    if (!(await confirmDialog(language === 'MN'
+      ? `"${selectedEvent.title}" арга хэмжээг устгах уу?`
+      : `Delete event "${selectedEvent.title}"?`))) return;
 
     try {
       await deleteEvent(selectedEvent.id);

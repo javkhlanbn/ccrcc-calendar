@@ -13,10 +13,23 @@ import { Badge } from '../components/ui/Badge';
 import { motion } from 'motion/react';
 import { format, parseISO, startOfDay, compareAsc, isValid, startOfMonth, endOfMonth, getDate, isSameDay } from 'date-fns';
 import { cn } from '../lib/utils';
-import { UserProfile } from '../types';
+import { UserProfile, Poll } from '../types';
 import { computeLeaveBalance } from '../utils/leave';
 import { Link } from 'react-router-dom';
-import { Palmtree } from 'lucide-react';
+import { Palmtree, Vote } from 'lucide-react';
+
+// Donut-ийн сонголт бүрийн өнгө — тогтмол дараалалтай, CVD-safe categorical palette
+const POLL_COLORS_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+const POLL_COLORS_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+
+interface PollTooltip {
+  x: number;
+  y: number;
+  question: string;
+  option?: string;
+  count?: number;
+  percent?: number;
+}
 
 interface Activity {
   id: string;
@@ -28,10 +41,12 @@ interface Activity {
 }
 
 export const Dashboard: React.FC = () => {
-  const { projects, events, language, leaveRequests, leaveEntitlementFor, leaveYear, profile } = useAppContext();
+  const { projects, events, language, leaveRequests, leaveEntitlementFor, leaveYear, profile, polls, theme } = useAppContext();
   const [activities, setActivities] = useState<Activity[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [now, setNow] = useState(new Date());
+  // Идэвхтэй санал асуулгын donut дээр hover хийхэд гарах жижиг tooltip
+  const [pollTip, setPollTip] = useState<PollTooltip | null>(null);
   const t = translations[language];
 
   useEffect(() => {
@@ -155,6 +170,27 @@ export const Dashboard: React.FC = () => {
     return `🎂 ${birthdayName}`;
   };
 
+  const openPolls = polls.filter(p => p.status === 'open');
+  const pollColors = theme === 'dark' ? POLL_COLORS_DARK : POLL_COLORS_LIGHT;
+
+  // Асуулгын дүнг donut-ийн сегментүүд болгон бэлтгэнэ (8-аас олон сонголттой бол "Бусад"-д нэгтгэнэ)
+  const pollSegments = (poll: Poll): { label: string; count: number; other?: boolean }[] => {
+    const named = poll.results.map(r => ({
+      label: poll.options.find(o => o.id === r.optionId)?.text || '',
+      count: r.count,
+    }));
+    if (named.length <= 8) return named;
+    const sorted = [...named].sort((a, b) => b.count - a.count);
+    return [
+      ...sorted.slice(0, 7),
+      {
+        label: language === 'MN' ? 'Бусад' : 'Other',
+        count: sorted.slice(7).reduce((s, x) => s + x.count, 0),
+        other: true,
+      },
+    ];
+  };
+
   return (
     <div className="space-y-8">
       <header>
@@ -229,6 +265,104 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Идэвхтэй санал асуулга — сонголт бүрийн хувийг donut-оор харуулна */}
+      {openPolls.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+              <Vote className="w-5 h-5 text-primary" />
+              {language === 'MN' ? 'Идэвхтэй санал асуулга' : 'Active Polls'}
+            </h2>
+            <Link to="/polls" className="text-primary text-sm font-semibold flex items-center gap-1 hover:underline">
+              {language === 'MN' ? 'Дэлгэрэнгүй' : 'Details'} <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+
+          <div className="flex flex-wrap gap-6">
+            {openPolls.map(poll => {
+              const segments = pollSegments(poll);
+              const total = segments.reduce((s, x) => s + x.count, 0);
+              const R = 40;
+              const CIRC = 2 * Math.PI * R;
+              // Сегмент хоорондын 2px зай (нэг л сегменттэй бол зай хэрэггүй)
+              const gap = segments.filter(s => s.count > 0).length > 1 ? 2 : 0;
+              let acc = 0;
+              return (
+                <Link
+                  to="/polls"
+                  key={poll.id}
+                  className="flex flex-col items-center gap-2 w-36 group"
+                  onMouseMove={e => {
+                    // Сегмент дээр биш үед зөвхөн асуултын нэрийг харуулна
+                    if ((e.target as SVGElement).tagName !== 'circle') {
+                      setPollTip({ x: e.clientX, y: e.clientY, question: poll.question });
+                    }
+                  }}
+                  onMouseLeave={() => setPollTip(null)}
+                >
+                  <div className="relative w-28 h-28">
+                    <svg viewBox="0 0 112 112" className="w-28 h-28 -rotate-90">
+                      <circle cx="56" cy="56" r={R} fill="none" strokeWidth="16" className="stroke-slate-100 dark:stroke-slate-800" />
+                      {total > 0 && segments.map((seg, i) => {
+                        if (seg.count === 0) return null;
+                        const len = (seg.count / total) * CIRC;
+                        const dash = Math.max(0.5, len - gap);
+                        const offset = acc;
+                        acc += len;
+                        return (
+                          <circle
+                            key={i}
+                            cx="56"
+                            cy="56"
+                            r={R}
+                            fill="none"
+                            strokeWidth="16"
+                            stroke={seg.other ? '#898781' : pollColors[i]}
+                            strokeDasharray={`${dash} ${CIRC - dash}`}
+                            strokeDashoffset={-offset}
+                            className="transition-opacity hover:opacity-75"
+                            onMouseMove={e => setPollTip({
+                              x: e.clientX,
+                              y: e.clientY,
+                              question: poll.question,
+                              option: seg.label,
+                              count: seg.count,
+                              percent: Math.round((seg.count / total) * 100),
+                            })}
+                          />
+                        );
+                      })}
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                      <span className="text-lg font-bold text-slate-900 dark:text-slate-100">{poll.totalVotes}</span>
+                      <span className="text-[10px] text-slate-400">{language === 'MN' ? 'хүн' : 'voted'}</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-center font-medium text-slate-500 dark:text-slate-400 group-hover:text-primary transition-colors line-clamp-2">
+                    {poll.question}
+                  </p>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Donut дээр hover хийхэд асуулт болон сонголтын мэдээлэл жижгээр гарна */}
+      {pollTip && (
+        <div
+          className="fixed z-50 pointer-events-none px-3 py-2 rounded-lg bg-slate-900/95 dark:bg-slate-700/95 text-white text-xs shadow-xl max-w-[240px]"
+          style={{ left: pollTip.x + 12, top: pollTip.y + 12 }}
+        >
+          <p className="font-bold">{pollTip.question}</p>
+          {pollTip.option && (
+            <p className="text-slate-300 mt-0.5">
+              {pollTip.option}: {pollTip.count} ({pollTip.percent}%)
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Upcoming Events */}
         <div className="lg:col-span-2 space-y-6">
@@ -276,18 +410,18 @@ export const Dashboard: React.FC = () => {
                               ? (language === 'MN' ? 'Шуурхай хурал' : 'Urgent Meeting')
                               : event.category === 'Report'
                                 ? (language === 'MN' ? 'Тайлан мэдээ' : 'Report')
-                                : t[event.category.toLowerCase() as keyof typeof t.EN]}
+                                : t[event.category.toLowerCase() as keyof typeof t]}
                           </Badge>
                           {event.tags.map(tag => (
                             <Badge key={tag} variant="outline" className="opacity-70">
-                              {t[tag.toLowerCase() as keyof typeof t.EN]}
+                              {t[tag.toLowerCase() as keyof typeof t]}
                             </Badge>
                           ))}
                         </div>
                       </div>
                     </div>
                     <Badge variant={event.priority === 'High' ? 'error' : event.priority === 'Medium' ? 'warning' : 'outline'}>
-                      {t[event.priority.toLowerCase() as keyof typeof t.EN]}
+                      {t[event.priority.toLowerCase() as keyof typeof t]}
                     </Badge>
                   </div>
                 </motion.div>

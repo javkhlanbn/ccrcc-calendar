@@ -1,3 +1,16 @@
+# Тохиргооны нууц файлуудыг вэбээр татахыг хориглоно.
+# .env.local дотор өгөгдлийн сангийн нэр, хэрэглэгч, НУУЦ ҮГ байдаг тул
+# энэ дүрэмгүй бол https://domain/.env.local хаягаар ил татагдана.
+<FilesMatch "^\.env">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
 

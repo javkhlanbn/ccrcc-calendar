@@ -27,7 +27,9 @@ import {
   NotebookPen,
   Radio,
   Palmtree,
-  MessageSquare
+  MessageSquare,
+  Vote,
+  CalendarRange
 } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
@@ -36,7 +38,7 @@ import { Department } from '../types';
 import { formatDuration, useElapsed } from '../utils/duration';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { language, setLanguage, theme, setTheme, user, profile, loginWithEmail, register, logout, isAuthReady, updateProfilePicture, tasks, meetingSignal, endMeetingSignal, canAccessProcurement, unreadMessageCount } = useAppContext();
+  const { language, setLanguage, theme, setTheme, user, profile, loginWithEmail, register, logout, isAuthReady, updateProfilePicture, tasks, meetingSignal, endMeetingSignal, canAccessProcurement, unreadMessageCount, polls } = useAppContext();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
   const [dismissedSignalId, setDismissedSignalId] = useState<number | null>(null);
   // Хурал эхэлснээс хойш өнгөрсөн хугацаа (секунд тутам шинэчлэгдэнэ)
@@ -161,6 +163,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   const activeTaskCount = tasks.filter(tk => tk.status !== 'Completed').length;
+  // Санал өгөөгүй байгаа нээлттэй асуулгын тоо — цэсэн дээр badge болж харагдана
+  const pendingPollCount = polls.filter(p => p.status === 'open' && p.myOptionIds.length === 0).length;
 
   const navItems: { icon: React.ElementType; label: string; path: string; badge?: number }[] = [
     { icon: LayoutDashboard, label: t.dashboard, path: '/' },
@@ -170,8 +174,10 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     ...(canAccessProcurement
       ? [{ icon: ShoppingCart, label: language === 'MN' ? 'Худалдан авах ажиллагааны төлөвлөгөө' : 'Procurement Plan', path: '/procurement' }]
       : []),
+    { icon: CalendarRange, label: language === 'MN' ? 'Ажлын төлөвлөгөө' : 'Work Plans', path: '/work-plans' },
     { icon: NotebookPen, label: language === 'MN' ? 'Хурал' : 'Meeting Minutes', path: '/meeting-minutes' },
     { icon: MessageSquare, label: language === 'MN' ? 'Зурвас' : 'Messages', path: '/messages', badge: unreadMessageCount },
+    { icon: Vote, label: language === 'MN' ? 'Санал асуулга' : 'Polls', path: '/polls', badge: pendingPollCount },
     { icon: Palmtree, label: language === 'MN' ? 'Ээлжийн амралт' : 'Annual Leave', path: '/leave' },
   ];
 

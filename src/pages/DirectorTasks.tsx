@@ -8,6 +8,7 @@ import {
 import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
 import { Modal } from '../components/ui/Modal';
+import { useConfirm } from '../components/ui/ConfirmDialog';
 import { Badge } from '../components/ui/Badge';
 import { cn } from '../lib/utils';
 import { DirectorTask, DirectorTaskStatus, DirectorTaskPriority, DirectorTaskActivity, EventAttachment, UserProfile } from '../types';
@@ -109,6 +110,7 @@ function BarChartSVG({ data }: { data: { label: string; value: number }[] }) {
 
 export const DirectorTasks: React.FC = () => {
   const { profile, language } = useAppContext();
+  const confirmDialog = useConfirm();
   const t = translations[language];
   const canManage = profile?.role === 'admin';
 
@@ -290,7 +292,7 @@ export const DirectorTasks: React.FC = () => {
   };
 
   const handleDelete = async (task: DirectorTask) => {
-    if (!confirm(language === 'MN' ? 'Үүргийг устгах уу?' : 'Delete this task?')) return;
+    if (!(await confirmDialog(language === 'MN' ? 'Үүргийг устгах уу?' : 'Delete this task?'))) return;
     await fetch(`/api/director-tasks/${task.id}`, { method: 'DELETE' });
     await fetchAll();
     if (isDetailOpen && detailTask?.id === task.id) setIsDetailOpen(false);

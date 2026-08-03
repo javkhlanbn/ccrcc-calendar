@@ -240,6 +240,109 @@ export interface DirectorTask {
   updatedAt: string;
 }
 
+// ===== Санал асуулга =====
+export type PollStatus = 'open' | 'closed';
+
+export interface PollOption {
+  id: string;
+  text: string;
+}
+
+// Нэг сонголтын дүн — нууц санал асуулгад voters хоосон ирнэ
+export interface PollOptionResult {
+  optionId: string;
+  count: number;
+  voters: string[];
+}
+
+export interface Poll {
+  id: string;
+  question: string;
+  description?: string;
+  options: PollOption[];
+  allowMultiple: boolean;  // олон сонголт зөвшөөрөх эсэх
+  minChoices?: number | null; // олон сонголттой үед: доод тал нь хэдэн сонголт хийх (null = хязгааргүй)
+  maxChoices?: number | null; // олон сонголттой үед: дээд тал нь хэдэн сонголт хийх (null = хязгааргүй)
+  anonymous: boolean;      // нууц санал асуулга (хэн санал өгснийг харуулахгүй)
+  visibleToUserIds?: string[]; // хоосон бол бүх ажилтан оролцоно, эс бөгөөс зөвхөн сонгогдсон ажилчид
+  status: PollStatus;
+  closesAt?: string;       // yyyy-MM-dd — дуусах хугацаа (заавал биш)
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  totalVotes: number;          // санал өгсөн хүний тоо
+  results: PollOptionResult[]; // сонголт бүрийн дүн
+  myOptionIds: string[];       // миний өгсөн санал (хоосон бол өгөөгүй)
+}
+
+// ===== Ажлын төлөвлөгөө =====
+// Жилийн / хагас жилийн / сарын / 7 хоногийн төлөвлөгөө. Админ хэлтэс тус бүрээр үүсгэнэ.
+export type WorkPlanPeriodType = 'year' | 'halfyear' | 'month' | 'week';
+
+// Хүснэгтийн багана — өгөгдмөл баганууд дээр нэмж, нэрийг нь өөрчилж болно
+export interface WorkPlanColumn {
+  id: string;
+  label: string;
+  width?: number; // px
+}
+
+// Хүснэгтийн мөр — нүдний утга баганын id-гаар хадгалагдана
+export interface WorkPlanRow {
+  id: string;
+  cells: Record<string, string>;
+}
+
+export interface WorkPlan {
+  id: string;
+  title: string;
+  periodType: WorkPlanPeriodType;
+  year: number;
+  periodNo: number | null;   // хагас жил 1|2, сар 1-12, 7 хоног 1-53, жилийн үед null
+  startDate?: string;        // yyyy-MM-dd — хугацааны эхлэл (автоматаар бодогдоно)
+  endDate?: string;          // yyyy-MM-dd — хугацааны төгсгөл
+  department: Department;
+  columns: WorkPlanColumn[];
+  rows: WorkPlanRow[];
+  // Гарын үсгийн хэсэг — гарын үсэг зурах хүнийг бүртгэлтэй ажилчдаас сонгоно.
+  // Сонгогдсон ажилтан өөрөө "Батлах" дарж баталгаажуулна (*At бөглөгдөнө).
+  approvedByTitle: string;    // БАТЛАВ — албан тушаал
+  approvedByUserId: string;   // БАТЛАВ — сонгогдсон ажилтан
+  approvedByName: string;
+  approvedAt?: string;
+  reviewedByTitle: string;    // ХЯНАСАН — албан тушаал
+  reviewedByUserId: string;
+  reviewedByName: string;
+  reviewedAt?: string;
+  compiledByUserId: string;   // ТӨЛӨВЛӨГӨӨ НЭГТГЭСЭН
+  compiledByName: string;
+  compiledAt?: string;
+  // Тусгай эрхийн тохиргоо. Дөрвүүлээ хоосон бол бүх ажилтан харна (админ л засна).
+  visibleToUserIds: string[];
+  editableByUserIds: string[];
+  visibleToDepartments: string[];
+  editableByDepartments: string[];
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Файл дээрх төлөвлөгөөний хүснэгттэй ижил өгөгдмөл баганууд
+export const DEFAULT_WORK_PLAN_COLUMNS: WorkPlanColumn[] = [
+  { id: 'idx', label: 'Д/д', width: 60 },
+  { id: 'goal', label: 'Зорилт, арга хэмжээ', width: 320 },
+  { id: 'action', label: 'Хэрэгжүүлэх арга хэмжээ', width: 320 },
+  { id: 'dates', label: 'Эхлэх, дуусах огноо', width: 150 },
+  { id: 'owner', label: 'Хариуцах эзэн', width: 150 },
+];
+
+export const WORK_PLAN_PERIOD_LABELS: Record<WorkPlanPeriodType, { mn: string; en: string }> = {
+  year: { mn: 'Жилийн', en: 'Annual' },
+  halfyear: { mn: 'Хагас жилийн', en: 'Half-year' },
+  month: { mn: 'Сарын', en: 'Monthly' },
+  week: { mn: '7 хоногийн', en: 'Weekly' },
+};
+
 export type Language = 'EN' | 'MN';
 export type Theme = 'light' | 'dark';
 
@@ -255,6 +358,21 @@ export type Department =
   | 'Төсөл, хөтөлбөр, хамтын ажиллагааны хэлтэс'
   | 'Судалгаа, бүртгэл, баталгаажуулалтын хэлтэс'
   | 'Монгол-Кувейтын байгаль хамгаалах судалгааны хэлтэс';
+
+export const DEPARTMENTS: Department[] = [
+  'Захиргаа, санхүүгийн хэлтэс',
+  'Төсөл, хөтөлбөр, хамтын ажиллагааны хэлтэс',
+  'Судалгаа, бүртгэл, баталгаажуулалтын хэлтэс',
+  'Монгол-Кувейтын байгаль хамгаалах судалгааны хэлтэс',
+];
+
+// Хэлтсийн товч нэр — шүүлтүүрийн товчлуурт харагдана
+export const DEPARTMENT_SHORT_LABELS: Record<Department, string> = {
+  'Захиргаа, санхүүгийн хэлтэс': 'Захиргаа',
+  'Төсөл, хөтөлбөр, хамтын ажиллагааны хэлтэс': 'Төсөл',
+  'Судалгаа, бүртгэл, баталгаажуулалтын хэлтэс': 'Судалгаа',
+  'Монгол-Кувейтын байгаль хамгаалах судалгааны хэлтэс': 'МК',
+};
 
 export interface UserProfile {
   uid: string;

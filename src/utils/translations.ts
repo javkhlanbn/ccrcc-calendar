@@ -1,4 +1,6 @@
-export const translations = {
+import { Language } from '../types';
+
+const dict = {
   EN: {
     dashboard: 'Dashboard',
     calendar: 'Calendar',
@@ -47,6 +49,7 @@ export const translations = {
     welcomeBack: "Welcome back! Here's what's happening today.",
     viewAll: 'View all',
     admin: 'Admin',
+    user: 'User',
     today: 'Today',
     english: 'English',
     mongolian: 'Mongolian',
@@ -176,6 +179,7 @@ export const translations = {
     welcomeBack: "Тавтай морил! Өнөөдрийн тойм мэдээлэл.",
     viewAll: 'Бүгдийг харах',
     admin: 'Админ',
+    user: 'Ажилтан',
     today: 'Өнөөдөр',
     english: 'Англи',
     mongolian: 'Монгол',
@@ -258,3 +262,12 @@ export const translations = {
     allAssignees: 'Бүх хариуцагч',
   },
 };
+
+// Англи хувилбарын түлхүүрүүд нь эх загвар болно.
+export type TranslationDict = typeof dict.EN;
+
+// Доорх төрлийн тодорхойлолт нь хоёр зорилготой:
+//  1. translations[language] нь нэг тодорхой төрөл болно (өмнө нь EN|MN хоёрын union
+//     байсан тул түлхүүр бүрийг ашиглахад төрлийн алдаа гарч байсан).
+//  2. Шинэ түлхүүр нэмэхэд бүх хэлэнд орсон эсэхийг TypeScript шалгаж өгнө.
+export const translations: Record<Language, TranslationDict> = dict;

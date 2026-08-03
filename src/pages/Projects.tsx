@@ -19,12 +19,14 @@ import { useAppContext } from '../context/AppContext';
 import { translations } from '../utils/translations';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
+import { useConfirm } from '../components/ui/ConfirmDialog';
 import { Project, ProjectStatus, EnvironmentalTag, UserProfile, Task, TaskStatus, EventAttachment } from '../types';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 
 export const Projects: React.FC = () => {
   const { projects, tasks, language, addProject, updateProject, deleteProject, addTask, updateTask, deleteTask, updateTaskStatus, profile } = useAppContext();
+  const confirmDialog = useConfirm();
   const t = translations[language];
   const canManageProjects = profile?.role === 'admin';
   const [view, setView] = useState<'table' | 'kanban'>('table');
@@ -157,6 +159,9 @@ export const Projects: React.FC = () => {
 
   const handleDeleteTask = async () => {
     if (!canManageProjects || !selectedTask) return;
+    if (!(await confirmDialog(language === 'MN'
+      ? `"${selectedTask.title}" даалгаврыг устгах уу?`
+      : `Delete task "${selectedTask.title}"?`))) return;
     try {
       await deleteTask(selectedTask.id);
       setIsTaskModalOpen(false);
@@ -317,7 +322,7 @@ export const Projects: React.FC = () => {
               >
                 <div className="flex justify-between items-start mb-2">
                   <Badge variant={getStatusColor(project.status)}>
-                    {t[project.status.toLowerCase() as keyof typeof t.EN]}
+                    {t[project.status.toLowerCase() as keyof typeof t]}
                   </Badge>
                   {canManageProjects && (
                     <button className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-all">
@@ -330,7 +335,7 @@ export const Projects: React.FC = () => {
                 <div className="flex flex-wrap gap-1 mb-4">
                   {project.tags.map(tag => (
                     <Badge key={tag} variant="outline" className="text-[10px] py-0 px-1.5 opacity-70">
-                      {t[tag.toLowerCase() as keyof typeof t.EN]}
+                      {t[tag.toLowerCase() as keyof typeof t]}
                     </Badge>
                   ))}
                 </div>
@@ -431,7 +436,7 @@ export const Projects: React.FC = () => {
                     </td>
                     <td className="px-6 py-4">
                       <Badge variant={getStatusColor(project.status)}>
-                        {t[project.status.toLowerCase() as keyof typeof t.EN]}
+                        {t[project.status.toLowerCase() as keyof typeof t]}
                       </Badge>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-400">{project.startDate}</td>
@@ -440,7 +445,7 @@ export const Projects: React.FC = () => {
                       <div className="flex flex-wrap gap-1">
                         {project.tags.map(tag => (
                           <Badge key={tag} variant="outline" className="text-[10px]">
-                            {t[tag.toLowerCase() as keyof typeof t.EN]}
+                            {t[tag.toLowerCase() as keyof typeof t]}
                           </Badge>
                         ))}
                       </div>
@@ -600,7 +605,7 @@ export const Projects: React.FC = () => {
                     const tags = formData.tags || [];
                     setFormData({ ...formData, tags: tags.includes(tag as EnvironmentalTag) ? tags.filter(t => t !== tag) : [...tags, tag as EnvironmentalTag] });
                   }} className={cn("px-3 py-1 rounded-full text-xs font-bold border transition-all", formData.tags?.includes(tag as EnvironmentalTag) ? "bg-primary text-white border-primary" : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-transparent")}>
-                    {t[tag.toLowerCase() as keyof typeof t.EN]}
+                    {t[tag.toLowerCase() as keyof typeof t]}
                   </button>
                 ))}
               </div>
@@ -659,7 +664,14 @@ export const Projects: React.FC = () => {
           </div>
           <div className="flex gap-3 pt-4">
             {isEditMode && (
-              <button onClick={() => { if (selectedProject) deleteProject(selectedProject.id); setIsModalOpen(false); }} className="flex-1 py-3 rounded-xl bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 font-bold hover:bg-rose-100 transition-colors">
+              <button onClick={async () => {
+                if (!selectedProject) return;
+                if (!(await confirmDialog(language === 'MN'
+                  ? `"${selectedProject.title}" төслийг устгах уу?`
+                  : `Delete project "${selectedProject.title}"?`))) return;
+                deleteProject(selectedProject.id);
+                setIsModalOpen(false);
+              }} className="flex-1 py-3 rounded-xl bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 font-bold hover:bg-rose-100 transition-colors">
                 {t.deleteEvent}
               </button>
             )}
